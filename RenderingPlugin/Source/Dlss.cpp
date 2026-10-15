@@ -197,7 +197,7 @@ bool DlssInstance::CreateFeature(const wire::DlssDispatchPayload& command,
         return false;
     }
 
-    LogInfo("[UnityRHI.DLSS] Created NGX SuperSampling instance %d at %ux%u -> %ux%u "
+    LogVerbose("[UnityRHI.DLSS] Created NGX SuperSampling instance %d at %ux%u -> %ux%u "
             "(mode=%u, preset=%u).",
         m_Id, renderWidth, renderHeight,
         unsigned(m_OutputWidth), unsigned(m_OutputHeight),

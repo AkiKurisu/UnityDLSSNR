@@ -169,7 +169,7 @@ bool DlrrInstance::CreateFeature(const wire::DlrrDispatchPayload& command,
         return false;
     }
 
-    LogInfo("[UnityRHI.DLRR] Created direct NGX instance %d at %ux%u -> %ux%u "
+    LogVerbose("[UnityRHI.DLRR] Created direct NGX instance %d at %ux%u -> %ux%u "
             "(mode=%u, preset=%u).",
         m_Id, renderWidth, renderHeight,
         unsigned(m_OutputWidth), unsigned(m_OutputHeight),

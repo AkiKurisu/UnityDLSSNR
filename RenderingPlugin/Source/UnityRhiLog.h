@@ -30,6 +30,19 @@ inline void LogInfo(const char* format, ...)
     va_end(args);
 }
 
+// Per-instance lifecycle messages, compiled in only with UNITYRHI_VERBOSE_LOG.
+inline void LogVerbose(const char* format, ...)
+{
+#ifdef UNITYRHI_VERBOSE_LOG
+    va_list args;
+    va_start(args, format);
+    LogVFormat(kUnityLogTypeLog, format, args);
+    va_end(args);
+#else
+    (void)format;
+#endif
+}
+
 inline void LogWarning(const char* format, ...)
 {
     va_list args;

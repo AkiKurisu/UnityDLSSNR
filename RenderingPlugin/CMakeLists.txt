@@ -212,6 +212,10 @@ target_link_libraries(UnityRHINative PRIVATE
     dxgi
 )
 target_compile_definitions(UnityRHINative PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+option(UNITYRHI_VERBOSE_LOG "Log UnityRHI per-instance lifecycle messages" OFF)
+if(UNITYRHI_VERBOSE_LOG)
+    target_compile_definitions(UnityRHINative PRIVATE UNITYRHI_VERBOSE_LOG)
+endif()
 
 # Unity 2021.3 stops at IUnityGraphicsD3D12v7 and has no public
 # RequestResourceState/NotifyResourceState. That used to be a build variant

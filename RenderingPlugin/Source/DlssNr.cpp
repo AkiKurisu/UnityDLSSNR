@@ -178,7 +178,7 @@ void DlssNrInstance::QueuePendingRelease(NVSDK_NGX_Handle* handle, uint32_t last
     if (!handle)
         return;
     s_PendingReleases.push_back({handle, lastUseInstance, instanceId});
-    LogInfo("[UnityRHI.DLSSNR] Deferred feature 18 release for instance %d until lifetime %u retires.",
+    LogVerbose("[UnityRHI.DLSSNR] Deferred feature 18 release for instance %d until lifetime %u retires.",
         instanceId, unsigned(lastUseInstance));
 }
 
@@ -245,7 +245,7 @@ bool DlssNrInstance::Create(const wire::DlssNrDispatchPayload& command,
         m_Handle = nullptr;
         return false;
     }
-    LogInfo("[UnityRHI.DLSSNR] Created feature 18 instance %d (%ux%u -> %ux%u).",
+    LogVerbose("[UnityRHI.DLSSNR] Created feature 18 instance %d (%ux%u -> %ux%u).",
         m_Id, unsigned(m_InputWidth), unsigned(m_InputHeight),
         unsigned(m_OutputWidth), unsigned(m_OutputHeight));
     return true;
