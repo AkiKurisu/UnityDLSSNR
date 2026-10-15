@@ -54,10 +54,13 @@ set(UNITYRHI_DIRECTX_HEADERS "${unityrhi_directx_headers_SOURCE_DIR}")
 # NRI remains the backend for the legacy NRIPlugin (NRD/DLSR/NIS). Its NGX
 # dependency also supplies the pinned SDK headers, import library and feature
 # DLLs used directly by UnityRHI's DLRR and upcoming frame-generation bridge.
-# Official NVIDIA-RTX/NRI, unmodified; pin the legacy plugin revision.
+# Official NVIDIA-RTX/NRI; pin the legacy plugin revision.
+# Patched so a wrapped device older than ID3D12Device15 (Agility SDK 618, which
+# Unity 6.3 ships) creates descriptors through the methods it has.
 FetchContent_Declare(unityrhi_nri
     URL "https://github.com/NVIDIA-RTX/NRI/archive/7f1ceca506e6e9a8489c2a76e3da534a5f9074f2.zip"
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    PATCH_COMMAND git apply --ignore-whitespace "${CMAKE_CURRENT_SOURCE_DIR}/Patches/nri-wrapped-device-descriptors.patch"
     SOURCE_SUBDIR ".")
 set(NRI_STATIC_LIBRARY OFF CACHE BOOL "" FORCE)
 set(NRI_ENABLE_D3D11_SUPPORT OFF CACHE BOOL "" FORCE)
@@ -163,9 +166,6 @@ add_library(UnityRHINative SHARED
     Source/UnityRhiLog.h
     Source/UnityRhiProfiler.cpp
     Source/UnityRhiProfiler.h
-    # Agility SDK opt-in for hosts without the D3D12SDKVersion exports
-    Source/d3d12/AgilitySdk.cpp
-    Source/d3d12/AgilitySdk.h
     # GPU dump-file diagnostics (Agility SDK preview; no NVRHI counterpart)
     Source/d3d12/GpuDumps.cpp
     Source/d3d12/GpuDumps.h

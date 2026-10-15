@@ -16,7 +16,6 @@
 #include "IUnityInterface.h"
 #include "IUnityLog.h"
 
-#include "d3d12/AgilitySdk.h"
 #include "d3d12/d3d12-backend.h"
 #include "d3d12/GpuDumps.h"
 #include "CommandStream.h"
@@ -249,10 +248,6 @@ void UNITY_INTERFACE_API OnGraphicsDeviceEvent(UnityGfxDeviceEventType eventType
         g_State.d3d12Active = true;
         LogInfo("[UnityRHI] Initialized on D3D12. ID3D12Device=%p state-forwarding=%s",
             static_cast<void*>(device), unityrhi::UnityStateForwardingDescription());
-        // Which D3D12 runtime actually won. SetSDKVersion returning S_OK does
-        // not guarantee the core loaded: preview SDKs additionally require
-        // Windows Developer Mode, and fall back to the OS runtime silently.
-        LogInfo("[UnityRHI] D3D12Core: %s", unityrhi::ResolvedD3D12CorePath());
         break;
     }
     case kUnityGfxDeviceEventShutdown:
@@ -453,11 +448,6 @@ extern "C"
         InitializeNativeProfiler(unityInterfaces);
         g_State.interfaces = unityInterfaces;
         g_Log = unityInterfaces->Get<IUnityLog>();
-        // Before anything can create a device. Only actually early enough when
-        // this plugin is marked "Load on startup" (isPreloaded: 1), which puts
-        // this call in Unity's preload step ahead of "GfxDevice: creating
-        // device"; otherwise it detects the loaded core and does nothing.
-        EnableAgilitySdkIfHostDoesNot();
         if (IsStandalonePlayer())
             InstallFrameGenerationHooks();
         g_State.graphics = unityInterfaces->Get<IUnityGraphics>();

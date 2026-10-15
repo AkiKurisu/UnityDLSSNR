@@ -24,8 +24,6 @@ mkdir "%DST%" >nul
 robocopy "%SRC%" "%DST%" /E /NFL /NDL /NJH /NJS /nc /ns /np /XF *.dll *.pdb >nul
 if %ERRORLEVEL% GEQ 8 exit /B 1
 
-if not exist "%PLUGINS%\D3D12" mkdir "%PLUGINS%\D3D12"
-
 call :copy_required "%BIN%\UnityRHI.dll" "%PLUGINS%\"
 if errorlevel 1 exit /B 1
 call :copy_required "%BIN%\NRI.dll" "%PLUGINS%\"
@@ -48,10 +46,6 @@ call :copy_required "%BIN%\nvngx_dlssg.dll" "%PLUGINS%\"
 if errorlevel 1 exit /B 1
 call :copy_optional "%BIN%\nvngx_dlssnr.dll" "%PLUGINS%\"
 if errorlevel 1 exit /B 1
-call :copy_required "%BIN%\AgilitySDK\D3D12Core.dll" "%PLUGINS%\D3D12\"
-if errorlevel 1 exit /B 1
-call :copy_required "%BIN%\AgilitySDK\d3d12SDKLayers.dll" "%PLUGINS%\D3D12\"
-if errorlevel 1 exit /B 1
 
 if /I "%CONFIG%"=="Debug" (
     echo   Debug symbols:
@@ -64,10 +58,6 @@ if /I "%CONFIG%"=="Debug" (
     call :copy_optional "%BIN%\D3D12HeapHook.pdb" "%PLUGINS%\"
     if errorlevel 1 exit /B 1
     call :copy_optional "%BIN%\NRD.pdb" "%PLUGINS%\"
-    if errorlevel 1 exit /B 1
-    call :copy_optional "%BIN%\AgilitySDK\D3D12Core.pdb" "%PLUGINS%\D3D12\"
-    if errorlevel 1 exit /B 1
-    call :copy_optional "%BIN%\AgilitySDK\d3d12SDKLayers.pdb" "%PLUGINS%\D3D12\"
     if errorlevel 1 exit /B 1
 )
 

@@ -84,22 +84,19 @@ Neural Rendering will not be available.
 ## Add the packages to a Unity project
 
 1. Download and extract the prebuilt native package into the target project's
-   `Packages` folder, or copy the locally built
-   `Build/top.kuanmi.unityrhi.native` directory there. The final path must be
-   `Packages/top.kuanmi.unityrhi.native`.
+   `Packages` folder, copy the locally built `Build/top.kuanmi.unityrhi.native`
+   directory there, or reference it with a `file:` entry.
 2. Add or copy `Packages/top.kuanmi.unityrhi` into the target project.
 3. For DLSS Super Resolution, Frame Generation and/or Neural Rendering, also add or copy
    `Packages/top.kuanmi.dlss.urp`.
 4. Select Direct3D 12 as the active Windows graphics API and restart the Unity
    Editor.
 
-`top.kuanmi.unityrhi.native` must be an embedded package located inside the
-target project's `Packages` folder. Do not reference the external packed
-`Build` directory directly. The native package contains a preload function that
-must run before Unity creates the D3D12 device.
+The native runtime uses the D3D12 Agility SDK that Unity ships (1.618 in Unity
+6.3), so the package needs no particular location.
 
-After rebuilding the native code, replace the contents of the embedded
-`Packages/top.kuanmi.unityrhi.native` package in the target project.
+After rebuilding the native code, replace the contents of the
+`top.kuanmi.unityrhi.native` package the target project uses.
 
 ## Enable DLSS in URP
 
@@ -214,20 +211,17 @@ Packages/top.kuanmi.unityrhi.native/Plugins/x86_64/nvngx_dlssnr.dll
 
 ## 添加到 Unity 项目
 
-1. 下载预编译原生包并解压到目标项目的 `Packages` 文件夹，或者将本地构建的
-   `Build/top.kuanmi.unityrhi.native` 复制到该文件夹。最终路径必须为
-   `Packages/top.kuanmi.unityrhi.native`。
+1. 下载预编译原生包并解压到目标项目的 `Packages` 文件夹，将本地构建的
+   `Build/top.kuanmi.unityrhi.native` 复制到该文件夹，或者用 `file:` 条目引用它。
 2. 将 `Packages/top.kuanmi.unityrhi` 添加或复制到目标项目。
 3. 如需使用 DLSS 超分辨率、帧生成和/或神经渲染，还需添加或复制
    `Packages/top.kuanmi.dlss.urp`。
 4. 将 Direct3D 12 设为 Windows 当前图形 API，然后重启 Unity 编辑器。
 
-`top.kuanmi.unityrhi.native` 必须作为嵌入式包放在目标项目的 `Packages`
-文件夹中，不能直接引用项目外已打包的 `Build` 目录。该原生包包含必须在
-Unity 创建 D3D12 设备之前执行的预加载函数。
+原生运行时使用 Unity 自带的 D3D12 Agility SDK（Unity 6.3 为 1.618），因此原生包
+放在哪里都可以。
 
-重新构建原生代码后，请替换目标项目中嵌入式
-`Packages/top.kuanmi.unityrhi.native` 包的内容。
+重新构建原生代码后，请替换目标项目所用的 `top.kuanmi.unityrhi.native` 包的内容。
 
 ## 在 URP 中启用 DLSS
 
