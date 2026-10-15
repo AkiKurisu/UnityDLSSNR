@@ -7,6 +7,7 @@
 #include "NRDIntegration.hpp"
 
 #define LOG(msg) UNITY_LOG(s_Log, msg)
+#include "PluginLog.h"
 
 NrdInstance::NrdInstance(IUnityInterfaces* interfaces, int instanceId, const NrdDenoiserDesc* denoisers, int denoiserCount)
 {
@@ -142,11 +143,11 @@ void NrdInstance::DispatchCompute(FrameData* data)
     {
         if (TextureWidth == 0 || TextureHeight == 0)
         {
-            LOG(("[NRD Native] id:" + std::to_string(id) + " - Creating NRD instance for the first time.").c_str());
+            LOG_VERBOSE(("[NRD Native] id:" + std::to_string(id) + " - Creating NRD instance for the first time.").c_str());
         }
         else
         {
-            LOG(("[NRD Native] id:" + std::to_string(id) + " - Texture size changed, recreating NRD instance.").c_str());
+            LOG_VERBOSE(("[NRD Native] id:" + std::to_string(id) + " - Texture size changed, recreating NRD instance.").c_str());
         }
 
         TextureWidth = data->width;
@@ -277,7 +278,7 @@ void NrdInstance::CreateNrd()
         throw std::runtime_error("NRD Integration Init Failed");
     }
 
-    LOG(("[NRD Native] id:" + std::to_string(id)
+    LOG_VERBOSE(("[NRD Native] id:" + std::to_string(id)
         + " - NRD Instance Created/Updated with " + std::to_string(m_Denoisers.size())
         + " denoiser(s):" + summary).c_str());
 }
@@ -298,5 +299,5 @@ void NrdInstance::release_resources()
 
     m_are_resources_initialized = false;
 
-    LOG(("[NRD Native] id:" + std::to_string(id) + " - NRD Instance Released.").c_str());
+    LOG_VERBOSE(("[NRD Native] id:" + std::to_string(id) + " - NRD Instance Released.").c_str());
 }

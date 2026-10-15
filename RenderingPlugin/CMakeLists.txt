@@ -297,6 +297,10 @@ target_include_directories(NRIPlugin PRIVATE
 )
 target_compile_definitions(NRIPlugin PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
 target_compile_options(NRIPlugin PRIVATE /utf-8 /FS)
+option(NRIPLUGIN_VERBOSE_LOG "Log NRIPlugin instance and device lifecycle messages" OFF)
+if(NRIPLUGIN_VERBOSE_LOG)
+    target_compile_definitions(NRIPlugin PRIVATE NRIPLUGIN_VERBOSE_LOG)
+endif()
 target_link_libraries(NRIPlugin PRIVATE
     NRD
     NRI

@@ -2,6 +2,7 @@
 #include "D3D12HeapHook.h"
 
 #define LOG(msg) UNITY_LOG(s_Log, msg)
+#include "PluginLog.h"
 
 RenderSystem& RenderSystem::Get()
 {
@@ -66,7 +67,7 @@ void RenderSystem::Initialize(IUnityInterfaces* interfaces)
 
     m_are_resources_initialized = true;
 
-    LOG("[NRD Native] RenderSystem Initialized.");
+    LOG_VERBOSE("[NRD Native] RenderSystem Initialized.");
 }
 
 void RenderSystem::Shutdown()
@@ -85,7 +86,7 @@ void RenderSystem::Shutdown()
 
     m_are_resources_initialized = false;
 
-    LOG("[NRD Native] RenderSystem Shutdown completed.");
+    LOG_VERBOSE("[NRD Native] RenderSystem Shutdown completed.");
 }
 
 void RenderSystem::Release(nri::Texture* texture)
@@ -113,7 +114,7 @@ void RenderSystem::ProcessDeviceEvent(UnityGfxDeviceEventType type, IUnityInterf
         s_d3d12 = interfaces->Get<IUnityGraphicsD3D12v7>();
         s_Log = interfaces->Get<IUnityLog>();
 
-        LOG("[NRD Native] ProcessDeviceEvent kUnityGfxDeviceEventInitialize");
+        LOG_VERBOSE("[NRD Native] ProcessDeviceEvent kUnityGfxDeviceEventInitialize");
 
         UnityD3D12PluginEventConfig config_1;
         config_1.graphicsQueueAccess = kUnityD3D12GraphicsQueueAccess_DontCare;
@@ -129,7 +130,7 @@ void RenderSystem::ProcessDeviceEvent(UnityGfxDeviceEventType type, IUnityInterf
         // initialize_and_create_resources();
         break;
     case kUnityGfxDeviceEventShutdown:
-        LOG("[NRD Native] ProcessDeviceEvent kUnityGfxDeviceEventShutdown");
+        LOG_VERBOSE("[NRD Native] ProcessDeviceEvent kUnityGfxDeviceEventShutdown");
         // release_resources();
         break;
     case kUnityGfxDeviceEventBeforeReset:
