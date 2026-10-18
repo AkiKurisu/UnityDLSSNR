@@ -1,0 +1,295 @@
+diff --git a/NativePlugin.Bindless/PluginSource/source/RenderAPI.h b/NativePlugin.Bindless/PluginSource/source/RenderAPI.h
+index 13c5661..f67d1bc 100644
+--- a/NativePlugin.Bindless/PluginSource/source/RenderAPI.h
++++ b/NativePlugin.Bindless/PluginSource/source/RenderAPI.h
+@@ -22,7 +22,8 @@ struct BindlessTextureList {
+ enum class BindlessTextureType {
+ 	None = 0,
+ 	Resource,
+-	SRV
++	SRV,
++	RawBuffer
+ };
+ 
+ // 8 + 4 + 4 = 16 bytes.
+@@ -44,6 +45,7 @@ public:
+ 	virtual bool GetUsesReverseZ() = 0;
+ 	virtual int SetBindlessTextures(int offset, unsigned numTextures, BindlessTexture* textures) = 0;
+ 	virtual void SetCurrentBindlessOffset(void* eventData) = 0;
++	virtual int GetBindlessCapacity() { return 0; }
+ 
+ 	virtual void HookSetFunctions() {
+ 
+diff --git a/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.cpp b/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.cpp
+index b80535a..2475056 100644
+--- a/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.cpp
++++ b/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.cpp
+@@ -106,7 +106,7 @@ static bool Unprotect(void* addr) {
+ }
+ 
+ #ifdef USE_MINHOOK
+-#include "MinHook/include/MinHook.h"
++#include "MinHook.h"
+ #include "TargetFunctionHook.h"
+ 
+ _forceinline static void* HookVT(void* vtablePtr, int vtableOffset, void* newFunction) {
+@@ -419,19 +419,30 @@ extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateRootSignature(
+ 			newRanges.clear();
+ 
+ 			auto writableDescriptors = (D3D12_DESCRIPTOR_RANGE*)v.pDescriptorRanges;
++
++			// Removing or shrinking a range must not move the ranges after it: pin every range at its original offset.
++			std::vector<UINT> originalOffsets(v.NumDescriptorRanges);
++			UINT runningOffset = 0;
++			for (unsigned x = 0; x < v.NumDescriptorRanges; x++) {
++				auto& dr = writableDescriptors[x];
++				originalOffsets[x] = dr.OffsetInDescriptorsFromTableStart == D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND ? runningOffset : dr.OffsetInDescriptorsFromTableStart;
++				runningOffset = originalOffsets[x] + dr.NumDescriptors;
++			}
++
+ 			for (unsigned x = 0; x < v.NumDescriptorRanges; x++) {
+ 				auto& dr = writableDescriptors[x];
++				dr.OffsetInDescriptorsFromTableStart = originalOffsets[x];
+ 
+ 				UnityLog::Debug("DescriptorTable: %d, type: %d, base register: %d, numDescriptors: %d, offset: %d\n",
+ 					x, dr.RangeType, dr.BaseShaderRegister, dr.NumDescriptors, dr.OffsetInDescriptorsFromTableStart);
+ 
+-				if (dr.RegisterSpace != 0 || dr.RangeType != D3D12_DESCRIPTOR_RANGE_TYPE_SRV) {
++				if (dr.RegisterSpace > 1 || dr.RangeType != D3D12_DESCRIPTOR_RANGE_TYPE_SRV) {
+ 					newRanges.push_back(dr);
+ 					continue;
+ 				}
+ 
+ 				if (dr.BaseShaderRegister + dr.NumDescriptors != (srvBindlessDescriptorStart + 1)) {
+-					if (dr.BaseShaderRegister + dr.NumDescriptors > (srvBindlessDescriptorStart + 1)) {
++					if (dr.RegisterSpace == 0 && dr.BaseShaderRegister + dr.NumDescriptors > (srvBindlessDescriptorStart + 1)) {
+ 						ignore = true;
+ 
+ 						UnityLog::LogWarning("Some shader uses more than %d texture registers, this shader is not eligible for bindless.", (srvBindlessDescriptorStart + 1));
+@@ -451,15 +462,15 @@ extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateRootSignature(
+ 
+ 				// Past this list we are only working with descriptors
+ 				// which have (srvBindlessDescriptorStart + 1) entries.
+-				needPlaceSrv = true;
++				needPlaceSrv |= dr.RegisterSpace == 0;
+ 
+ 				if (dr.NumDescriptors == 1) {
+ 					// Just remove it.
+-					UnityLog::Log("Removing descriptor range\n");
++					UnityLog::Debug("Removing descriptor range\n");
+ 					continue;
+ 				}
+ 
+-				UnityLog::Log("Modified descriptor range.\n");
++				UnityLog::Debug("Modified descriptor range.\n");
+ 				dr.NumDescriptors--;
+ 				newRanges.push_back(dr);
+ 			}
+@@ -492,8 +503,14 @@ extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateRootSignature(
+ 	newRange.RegisterSpace = 0;
+ 	newRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+ 
+-	p.DescriptorTable.NumDescriptorRanges = 1;
+-	p.DescriptorTable.pDescriptorRanges = &newRange;
++	// The same descriptors are also exposed in register space 1 so raw buffers can be declared as ByteAddressBuffer[].
++	D3D12_DESCRIPTOR_RANGE ranges[2] = { newRange, newRange };
++	ranges[0].OffsetInDescriptorsFromTableStart = 0;
++	ranges[1].OffsetInDescriptorsFromTableStart = 0;
++	ranges[1].RegisterSpace = 1;
++
++	p.DescriptorTable.NumDescriptorRanges = 2;
++	p.DescriptorTable.pDescriptorRanges = ranges;
+ 
+ 	// Append to the end.
+ 	writableParams[rootSig.NumParameters] = p;
+@@ -568,7 +585,7 @@ extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateDescriptorHeap(ID3D12De
+ 			}
+ 		}
+ 
+-		UnityLog::Log("Creating CBV/SRV/UAV descriptor set with count %d with type %d (%d additional entries)\n", (int)pDescCopy.NumDescriptors, (int)pDescCopy.Type, additional);
++		UnityLog::Debug("Creating CBV/SRV/UAV descriptor set with count %d with type %d (%d additional entries)\n", (int)pDescCopy.NumDescriptors, (int)pDescCopy.Type, additional);
+ 
+ 		auto res = OrigCreateDescriptorHeap(device, &pDescCopy, riid, ppvHeap);
+ 		if (FAILED(res) || ppvHeap == nullptr) {
+@@ -580,7 +597,11 @@ extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateDescriptorHeap(ID3D12De
+ 				myD3D12->srvDescriptorHeaps.push_back(ptr);
+ 
+ 				if (hooked) {
++					// Unity may release this heap while entries still point into it; keep it alive.
++					ptr->AddRef();
++					std::lock_guard<std::mutex> lock(myD3D12->slotMutex);
+ 					myD3D12->hookedDescriptorHeaps.push_back(ptr);
++					myD3D12->WriteDescriptors(ptr, 0, (unsigned)myD3D12->slotEntries.size());
+ 				}
+ 			}
+ 		} else {
+@@ -960,28 +981,14 @@ void InstallEarlyD3D12Hooks()
+ 
+ extern unsigned __api_call_counter;
+ 
+-int RenderAPI_D3D12::SetBindlessTextures(int offset, unsigned numTextures, BindlessTexture* textures
+-) {
+-	if (!isInitialized) {
+-		UnityLog::LogError("Plugin is not initialized, try restart Unity Editor\n");
+-		return 0;
+-	}
+-
+-	if (myD3D12->hookedDescriptorHeaps.empty()) {
+-		UnityLog::LogError("SetBindlessTextures is called, but no srvHeap is set.\n");
+-		return 0;
+-	}
+-
+-	// TODO: Optimize;
+-	// TODO: Check for changes
+-	const auto& heaps = this->hookedDescriptorHeaps;
+-	for (auto heap : heaps) {
++void RenderAPI_D3D12::WriteDescriptors(ID3D12DescriptorHeap* heap, unsigned first, unsigned count) {
++	{
+ 		CD3DX12_CPU_DESCRIPTOR_HANDLE cpuHandle(heap->GetCPUDescriptorHandleForHeapStart());
+ 		cpuHandle.Offset(this->srvIncrement * this->srvBaseOffset);
+-		cpuHandle.Offset(this->srvIncrement * offset);
++		cpuHandle.Offset(this->srvIncrement * first);
+ 
+-		for (unsigned i = 0; i < numTextures; i++) {
+-			auto t = textures[i];
++		for (unsigned i = 0; i < count; i++) {
++			auto t = slotEntries[first + i];
+ 
+ 			if (t.type == BindlessTextureType::None) {
+ 				D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+@@ -1015,6 +1022,23 @@ int RenderAPI_D3D12::SetBindlessTextures(int offset, unsigned numTextures, Bindl
+ 				goto next;
+ 			}
+ 
++			// Raw buffers are read through the same descriptors as ByteAddressBuffer[] in register space 1.
++			if (t.type == BindlessTextureType::RawBuffer) {
++				auto bufferResource = (ID3D12Resource*)t.handle;
++				auto desc = bufferResource->GetDesc();
++
++				D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
++				srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
++				srvDesc.Format = DXGI_FORMAT_R32_TYPELESS;
++				srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
++				srvDesc.Buffer.FirstElement = 0;
++				srvDesc.Buffer.NumElements = (UINT)((t.unused != 0 ? t.unused : desc.Width) / 4);
++				srvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
++
++				device->CreateShaderResourceView(bufferResource, &srvDesc, cpuHandle);
++				goto next;
++			}
++
+ 			if (t.type == BindlessTextureType::SRV) {
+ 				UnityLog::LogWarning("Raw SRVs are not supported on D3D12\n");
+ 				goto next;
+@@ -1024,10 +1048,51 @@ int RenderAPI_D3D12::SetBindlessTextures(int offset, unsigned numTextures, Bindl
+ 			cpuHandle.Offset(this->srvIncrement);
+ 		}
+ 	}
++}
++
++int RenderAPI_D3D12::SetBindlessTextures(int offset, unsigned numTextures, BindlessTexture* textures
++) {
++	if (!isInitialized) {
++		UnityLog::LogError("Plugin is not initialized, try restart Unity Editor\n");
++		return 0;
++	}
++
++	if (myD3D12->hookedDescriptorHeaps.empty()) {
++		UnityLog::LogError("SetBindlessTextures is called, but no srvHeap is set.\n");
++		return 0;
++	}
++
++	std::lock_guard<std::mutex> lock(slotMutex);
++	if (slotEntries.size() < numAdditionalSrv()) {
++		slotEntries.resize(numAdditionalSrv());
++		slotResources.resize(numAdditionalSrv(), nullptr);
++	}
++	if (offset < 0 || offset + numTextures > slotEntries.size()) {
++		UnityLog::LogError("SetBindlessTextures is out of range.\n");
++		return 0;
++	}
++
++	for (unsigned i = 0; i < numTextures; i++) {
++		auto& t = textures[i];
++		IUnknown* resource = (t.type == BindlessTextureType::Resource || t.type == BindlessTextureType::RawBuffer) ? (IUnknown*)t.handle : nullptr;
++		if (resource != nullptr)
++			resource->AddRef();
++		if (slotResources[offset + i] != nullptr)
++			slotResources[offset + i]->Release();
++		slotResources[offset + i] = resource;
++		slotEntries[offset + i] = t;
++	}
++
++	for (auto heap : this->hookedDescriptorHeaps)
++		WriteDescriptors(heap, (unsigned)offset, numTextures);
+ 
+ 	return 1;
+ }
+ 
++int RenderAPI_D3D12::GetBindlessCapacity() {
++	return isInitialized && !hookedDescriptorHeaps.empty() ? (int)numAdditionalSrv() : 0;
++}
++
+ void RenderAPI_D3D12::HookSetFunctions() {
+ 	
+ }
+diff --git a/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.h b/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.h
+index ed5ccf0..55b0673 100644
+--- a/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.h
++++ b/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.h
+@@ -12,6 +12,8 @@
+ #include <unordered_map>
+ #include <utility>
+ #include <map>
++#include <mutex>
++#include <vector>
+ #include "RenderAPI.h"
+ 
+ class RenderAPI_D3D12 : public RenderAPI
+@@ -27,14 +29,15 @@ public:
+     );
+ 
+     virtual void SetCurrentBindlessOffset(void* eventData) override;
++    virtual int GetBindlessCapacity() override;
+     static DXGI_FORMAT typeless_fmt_to_typed(DXGI_FORMAT format);
+     
+     static uint32_t numAdditionalSrv() {
+-        return 4096u;
++        return 65536u;
+     }
+ 
+     static uint32_t numAdditionalSrvTotal() {
+-        return numAdditionalSrv() * 4u;
++        return numAdditionalSrv();
+     }
+ 
+     uint32_t srvBaseOffset;
+@@ -49,6 +52,12 @@ public:
+     std::vector<ID3D12DescriptorHeap*> srvDescriptorHeaps{};
+     std::vector<ID3D12DescriptorHeap*> hookedDescriptorHeaps{};
+ 
++    // Every entry is mirrored so heaps created later receive it, and keeps a reference to its resource.
++    std::vector<BindlessTexture> slotEntries{};
++    std::vector<IUnknown*> slotResources{};
++    std::mutex slotMutex;
++    void WriteDescriptors(ID3D12DescriptorHeap* heap, unsigned first, unsigned count);
++
+ private:
+     int currentFrameBindlessOffset;
+ 
+diff --git a/NativePlugin.Bindless/PluginSource/source/RenderingPlugin.cpp b/NativePlugin.Bindless/PluginSource/source/RenderingPlugin.cpp
+index 7c87755..6fa7f6e 100644
+--- a/NativePlugin.Bindless/PluginSource/source/RenderingPlugin.cpp
++++ b/NativePlugin.Bindless/PluginSource/source/RenderingPlugin.cpp
+@@ -119,4 +119,9 @@ extern "C" UNITY_INTERFACE_EXPORT int UNITY_INTERFACE_API MeetemBindless_SetBind
+ 		return 0;
+ 
+ 	return s_CurrentAPI->SetBindlessTextures(offset,(unsigned)numTextures, textures);
+-}
+\ No newline at end of file
++}
++
++extern "C" UNITY_INTERFACE_EXPORT int UNITY_INTERFACE_API MeetemBindless_GetCapacity()
++{
++	return s_CurrentAPI != nullptr ? s_CurrentAPI->GetBindlessCapacity() : 0;
++}
