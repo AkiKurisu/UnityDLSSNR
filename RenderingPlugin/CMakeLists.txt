@@ -259,9 +259,8 @@ target_compile_definitions(UnityRHIFeatureLevelLauncher PRIVATE WIN32_LEAN_AND_M
 target_compile_options(UnityRHIFeatureLevelLauncher PRIVATE /W4 /permissive- /FS)
 
 # ---------------------------------------------------------------------------
-# GfxPluginUnityRhiBindless: an indexed SRV range for compute root signatures in
-# Unity's shader-visible heap (DX12BindlessUnity, hooked with MinHook). The
-# GfxPlugin prefix makes Unity load it before the device creates its heaps.
+# Bindless descriptors and shader execution reordering through MinHook.
+# The GfxPlugin prefix enables loading before graphics device initialization.
 enable_language(C)
 FetchContent_Declare(unityrhi_dx12bindless
     URL "https://github.com/Meetem/DX12BindlessUnity/archive/ae06d547b43fdf2a5313a2f735ef0861016e3eba.zip"
@@ -279,7 +278,8 @@ FetchContent_Declare(unityrhi_minhook
 FetchContent_MakeAvailable(unityrhi_dx12bindless unityrhi_minhook)
 set(UNITYRHI_BINDLESS_SRC "${unityrhi_dx12bindless_SOURCE_DIR}/NativePlugin.Bindless/PluginSource/source")
 set(UNITYRHI_MINHOOK_SRC "${unityrhi_minhook_SOURCE_DIR}")
-add_library(GfxPluginUnityRhiBindless SHARED
+add_library(GfxPluginIllusionRHI SHARED
+    ShaderExecutionReordering.cpp
     "${UNITYRHI_BINDLESS_SRC}/RenderingPlugin.cpp"
     "${UNITYRHI_BINDLESS_SRC}/RenderAPI.cpp"
     "${UNITYRHI_BINDLESS_SRC}/RenderAPI_D3D11.cpp"
@@ -292,19 +292,21 @@ add_library(GfxPluginUnityRhiBindless SHARED
     "${UNITYRHI_MINHOOK_SRC}/src/trampoline.c"
     "${UNITYRHI_MINHOOK_SRC}/src/hde/hde64.c"
 )
-set_target_properties(GfxPluginUnityRhiBindless PROPERTIES
-    OUTPUT_NAME "GfxPluginUnityRhiBindless"
+set_target_properties(GfxPluginIllusionRHI PROPERTIES
+    OUTPUT_NAME "GfxPluginIllusionRHI"
     CXX_STANDARD 20
     CXX_STANDARD_REQUIRED ON
 )
-target_include_directories(GfxPluginUnityRhiBindless PRIVATE
+target_include_directories(GfxPluginIllusionRHI PRIVATE
+    "${UNITYRHI_DXC_INCLUDE}"
     "${UNITYRHI_BINDLESS_SRC}"
     "${UNITYRHI_MINHOOK_SRC}/include"
     "${UNITYRHI_DIRECTX_HEADERS}/include/directx"
     "${UNITYRHI_DIRECTX_HEADERS}/include")
-target_compile_definitions(GfxPluginUnityRhiBindless PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX USE_MINHOOK)
-target_compile_options(GfxPluginUnityRhiBindless PRIVATE /utf-8 /FS)
-target_link_libraries(GfxPluginUnityRhiBindless PRIVATE d3d12 d3d11 dxgi dxguid opengl32)
+target_compile_definitions(GfxPluginIllusionRHI PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX USE_MINHOOK)
+target_compile_options(GfxPluginIllusionRHI PRIVATE /utf-8 /FS)
+target_link_libraries(GfxPluginIllusionRHI PRIVATE d3d12 d3d11 dxgi dxguid opengl32)
+unityrhi_link_nvapi(GfxPluginIllusionRHI)
 
 # D3D12HeapHook — SetDescriptorHeaps vtable hook shared with NRIPlugin.
 # UnityRHI loads it by ordinal (Begin=1, End=2, Install=3, Restore=4).
@@ -358,4 +360,4 @@ target_link_libraries(NRIPlugin PRIVATE
     D3D12HeapHook
     Microsoft::DirectX-Headers
 )
-add_dependencies(UnityRHINative D3D12HeapHook NRIPlugin GfxPluginUnityRhiBindless)
+add_dependencies(UnityRHINative D3D12HeapHook NRIPlugin GfxPluginIllusionRHI)

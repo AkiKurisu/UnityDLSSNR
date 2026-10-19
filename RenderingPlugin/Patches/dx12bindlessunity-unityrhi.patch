@@ -281,6 +281,31 @@ diff --git a/NativePlugin.Bindless/PluginSource/source/RenderingPlugin.cpp b/Nat
 index 7c87755..6fa7f6e 100644
 --- a/NativePlugin.Bindless/PluginSource/source/RenderingPlugin.cpp
 +++ b/NativePlugin.Bindless/PluginSource/source/RenderingPlugin.cpp
+@@ -11,7 +11,7 @@
+ #include "UAL/UnityLog.h"
+ 
+ #ifdef USE_MINHOOK
+-#include "MinHook/include/MinHook.h"
++#include "MinHook.h"
+ 
+ static bool InitializeHooks(){
+ 	if(MH_Initialize() != MH_STATUS::MH_OK){
+@@ -37,6 +37,7 @@
+ IUnityGraphics* s_Graphics = NULL;
+ 
+ extern void InstallEarlyD3D12Hooks();
++extern void ShutdownShaderExecutionReordering();
+ extern "C" UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API UnityPluginLoad(IUnityInterfaces * unityInterfaces)
+ {
+ 	s_UnityInterfaces = unityInterfaces;
+@@ -59,6 +60,7 @@
+ 
+ extern "C" UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API UnityPluginUnload()
+ {
++	ShutdownShaderExecutionReordering();
+ 	s_Graphics->UnregisterDeviceEventCallback(OnGraphicsDeviceEvent);
+ }
+ 
 @@ -119,4 +119,9 @@ extern "C" UNITY_INTERFACE_EXPORT int UNITY_INTERFACE_API MeetemBindless_SetBind
  		return 0;
  

@@ -32,7 +32,7 @@ call :copy_required "%BIN%\NRIPlugin.dll" "%PLUGINS%\"
 if errorlevel 1 exit /B 1
 call :copy_required "%BIN%\D3D12HeapHook.dll" "%PLUGINS%\"
 if errorlevel 1 exit /B 1
-call :copy_required "%BIN%\GfxPluginUnityRhiBindless.dll" "%PLUGINS%\"
+call :copy_required "%BIN%\GfxPluginIllusionRHI.dll" "%PLUGINS%\"
 if errorlevel 1 exit /B 1
 call :copy_required "%BIN%\NRD.dll" "%PLUGINS%\"
 if errorlevel 1 exit /B 1
