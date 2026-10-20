@@ -280,6 +280,7 @@ set(UNITYRHI_BINDLESS_SRC "${unityrhi_dx12bindless_SOURCE_DIR}/NativePlugin.Bind
 set(UNITYRHI_MINHOOK_SRC "${unityrhi_minhook_SOURCE_DIR}")
 add_library(GfxPluginIllusionRHI SHARED
     ShaderExecutionReordering.cpp
+    InlineRayTracing.cpp
     "${UNITYRHI_BINDLESS_SRC}/RenderingPlugin.cpp"
     "${UNITYRHI_BINDLESS_SRC}/RenderAPI.cpp"
     "${UNITYRHI_BINDLESS_SRC}/RenderAPI_D3D11.cpp"
@@ -298,6 +299,7 @@ set_target_properties(GfxPluginIllusionRHI PROPERTIES
     CXX_STANDARD_REQUIRED ON
 )
 target_include_directories(GfxPluginIllusionRHI PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/UnityPluginAPI"
     "${UNITYRHI_DXC_INCLUDE}"
     "${UNITYRHI_BINDLESS_SRC}"
     "${UNITYRHI_MINHOOK_SRC}/include"

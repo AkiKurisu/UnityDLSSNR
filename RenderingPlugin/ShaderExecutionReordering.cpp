@@ -138,6 +138,16 @@ extern "C" __declspec(dllexport) int UnityRhiInitializeShaderExecutionReordering
 #endif
 }
 
+DxcCreateInstanceProc GetShaderCompiler()
+{
+#if UNITYRHI_WITH_NVAPI
+    std::lock_guard<std::mutex> lock(installMutex);
+    return LoadCompiler() ? createDxc : nullptr;
+#else
+    return nullptr;
+#endif
+}
+
 void ShutdownShaderExecutionReordering()
 {
     std::lock_guard<std::mutex> lock(installMutex);

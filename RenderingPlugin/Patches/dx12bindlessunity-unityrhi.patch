@@ -1,8 +1,7 @@
 diff --git a/NativePlugin.Bindless/PluginSource/source/RenderAPI.h b/NativePlugin.Bindless/PluginSource/source/RenderAPI.h
-index 13c5661..f67d1bc 100644
 --- a/NativePlugin.Bindless/PluginSource/source/RenderAPI.h
 +++ b/NativePlugin.Bindless/PluginSource/source/RenderAPI.h
-@@ -22,7 +22,8 @@ struct BindlessTextureList {
+@@ -22,7 +22,8 @@
  enum class BindlessTextureType {
  	None = 0,
  	Resource,
@@ -12,7 +11,7 @@ index 13c5661..f67d1bc 100644
  };
  
  // 8 + 4 + 4 = 16 bytes.
-@@ -44,6 +45,7 @@ public:
+@@ -44,6 +45,7 @@
  	virtual bool GetUsesReverseZ() = 0;
  	virtual int SetBindlessTextures(int offset, unsigned numTextures, BindlessTexture* textures) = 0;
  	virtual void SetCurrentBindlessOffset(void* eventData) = 0;
@@ -21,10 +20,28 @@ index 13c5661..f67d1bc 100644
  	virtual void HookSetFunctions() {
  
 diff --git a/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.cpp b/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.cpp
-index b80535a..2475056 100644
 --- a/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.cpp
 +++ b/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.cpp
-@@ -106,7 +106,7 @@ static bool Unprotect(void* addr) {
+@@ -15,6 +15,9 @@
+ #include <mutex>
+ #include <type_traits>
+ 
++extern void ResetInlineRayTracing(ID3D12GraphicsCommandList*, ID3D12PipelineState*);
++extern void CaptureInlineRayTracing(const D3D12_COMPUTE_PIPELINE_STATE_DESC&, void*);
++
+ std::unordered_map<void*, void*> hookedFunctions = {};
+ 
+ concurrency::concurrent_unordered_set<void*> hookedCmdVTables;
+@@ -28,7 +31,7 @@
+ 
+ const uint32_t absoluteMaxDescriptors = 1000000u;
+ const uint32_t mainDescHeapMagic = 262144u;
+-const uint32_t srvBindlessDescriptorStart = 31u;
++const uint32_t srvBindlessDescriptorStart = 63u;
+ static bool isInitialized = false;
+ static RenderAPI_D3D12* myD3D12 = nullptr;
+ 
+@@ -106,7 +109,7 @@
  }
  
  #ifdef USE_MINHOOK
@@ -33,76 +50,156 @@ index b80535a..2475056 100644
  #include "TargetFunctionHook.h"
  
  _forceinline static void* HookVT(void* vtablePtr, int vtableOffset, void* newFunction) {
-@@ -419,19 +419,30 @@ extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateRootSignature(
- 			newRanges.clear();
+@@ -344,6 +347,8 @@
+ 	}
  
- 			auto writableDescriptors = (D3D12_DESCRIPTOR_RANGE*)v.pDescriptorRanges;
-+
-+			// Removing or shrinking a range must not move the ranges after it: pin every range at its original offset.
-+			std::vector<UINT> originalOffsets(v.NumDescriptorRanges);
-+			UINT runningOffset = 0;
-+			for (unsigned x = 0; x < v.NumDescriptorRanges; x++) {
-+				auto& dr = writableDescriptors[x];
-+				originalOffsets[x] = dr.OffsetInDescriptorsFromTableStart == D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND ? runningOffset : dr.OffsetInDescriptorsFromTableStart;
-+				runningOffset = originalOffsets[x] + dr.NumDescriptors;
-+			}
-+
- 			for (unsigned x = 0; x < v.NumDescriptorRanges; x++) {
- 				auto& dr = writableDescriptors[x];
-+				dr.OffsetInDescriptorsFromTableStart = originalOffsets[x];
+ 	auto res = OrigCreateComputePipelineState(This, pDesc, riid, ppPipelineState);
++	if (SUCCEEDED(res) && ppPipelineState && *ppPipelineState)
++		CaptureInlineRayTracing(*pDesc, *ppPipelineState);
+ 	if (!FAILED(res) && hasHookedRootsig) {
+ 		ID3D12PipelineState* state = (ID3D12PipelineState*)*ppPipelineState;
+ 		state->SetPrivateData(MeetemBindlessData, sizeof(HookedRootSignature), &data);
+@@ -360,6 +365,7 @@
+ {
+ 	auto result = OrigReset(This, pAllocator, pInitialState);
+ 	if (SUCCEEDED(result)) {
++		ResetInlineRayTracing(This, pInitialState);
+ 		SetCommandListState(This, {});
+ 		// Reset may replace the vtable and its recording entry points.
+ 		// Install before Unity starts recording, rather than at submission.
+@@ -389,96 +395,21 @@
+ 	deserializer->Release();
  
- 				UnityLog::Debug("DescriptorTable: %d, type: %d, base register: %d, numDescriptors: %d, offset: %d\n",
- 					x, dr.RangeType, dr.BaseShaderRegister, dr.NumDescriptors, dr.OffsetInDescriptorsFromTableStart);
- 
+ 	bool needPlaceSrv = false;
+-	bool ignore = false;
+-
+-	std::vector<D3D12_DESCRIPTOR_RANGE> newRanges{};
+-	newRanges.reserve(8192);
+-
+-	auto writableParams = ((D3D12_ROOT_PARAMETER*)(rootSig.pParameters));
+-	for (unsigned i = 0; i < rootSig.NumParameters; i++) {
+-		auto& p = writableParams[i];
+-
+-		// We are only interested in descriptor tables
+-		// As only there is possible to use bindless.
+-		if (p.ParameterType != D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE) {
+-			continue;
+-		}
+-
+-		UnityLog::Debug("Param: %d, type: %d, shader vis: %d\n", i, p.ParameterType, p.ShaderVisibility);
+-
+-		// For computes
+-		if (p.ShaderVisibility == D3D12_SHADER_VISIBILITY_ALL 
+-			|| p.ShaderVisibility == D3D12_SHADER_VISIBILITY_PIXEL
+-			//|| p.ShaderVisibility == D3D12_SHADER_VISIBILITY_VERTEX
+-		)
+-		{
+-			auto& v = p.DescriptorTable;
+-			UnityLog::Debug("Descriptor Table: %d, num ranges %d\n", i, v.NumDescriptorRanges);
+-
+-			//auto startIndex = newRanges.size();
+-			newRanges.clear();
+-
+-			auto writableDescriptors = (D3D12_DESCRIPTOR_RANGE*)v.pDescriptorRanges;
+-			for (unsigned x = 0; x < v.NumDescriptorRanges; x++) {
+-				auto& dr = writableDescriptors[x];
+-
+-				UnityLog::Debug("DescriptorTable: %d, type: %d, base register: %d, numDescriptors: %d, offset: %d\n",
+-					x, dr.RangeType, dr.BaseShaderRegister, dr.NumDescriptors, dr.OffsetInDescriptorsFromTableStart);
+-
 -				if (dr.RegisterSpace != 0 || dr.RangeType != D3D12_DESCRIPTOR_RANGE_TYPE_SRV) {
-+				if (dr.RegisterSpace > 1 || dr.RangeType != D3D12_DESCRIPTOR_RANGE_TYPE_SRV) {
- 					newRanges.push_back(dr);
- 					continue;
- 				}
- 
- 				if (dr.BaseShaderRegister + dr.NumDescriptors != (srvBindlessDescriptorStart + 1)) {
+-					newRanges.push_back(dr);
+-					continue;
+-				}
+-
+-				if (dr.BaseShaderRegister + dr.NumDescriptors != (srvBindlessDescriptorStart + 1)) {
 -					if (dr.BaseShaderRegister + dr.NumDescriptors > (srvBindlessDescriptorStart + 1)) {
-+					if (dr.RegisterSpace == 0 && dr.BaseShaderRegister + dr.NumDescriptors > (srvBindlessDescriptorStart + 1)) {
- 						ignore = true;
- 
- 						UnityLog::LogWarning("Some shader uses more than %d texture registers, this shader is not eligible for bindless.", (srvBindlessDescriptorStart + 1));
-@@ -451,15 +462,15 @@ extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateRootSignature(
- 
- 				// Past this list we are only working with descriptors
- 				// which have (srvBindlessDescriptorStart + 1) entries.
+-						ignore = true;
+-
+-						UnityLog::LogWarning("Some shader uses more than %d texture registers, this shader is not eligible for bindless.", (srvBindlessDescriptorStart + 1));
+-						UnityLog::LogWarning("DescriptorTable: %d, type: %d, base register: %d, numDescriptors: %d, offset: %d\n",
+-							x, dr.RangeType, dr.BaseShaderRegister, dr.NumDescriptors, dr.OffsetInDescriptorsFromTableStart);
+-					}
+-
+-					newRanges.push_back(dr);
+-					continue;
+-				}
+-
+-				if (ignore) {
+-					needPlaceSrv = false;
+-					newRanges.push_back(dr);
+-					continue;
+-				}
+-
+-				// Past this list we are only working with descriptors
+-				// which have (srvBindlessDescriptorStart + 1) entries.
 -				needPlaceSrv = true;
-+				needPlaceSrv |= dr.RegisterSpace == 0;
- 
- 				if (dr.NumDescriptors == 1) {
- 					// Just remove it.
+-
+-				if (dr.NumDescriptors == 1) {
+-					// Just remove it.
 -					UnityLog::Log("Removing descriptor range\n");
-+					UnityLog::Debug("Removing descriptor range\n");
- 					continue;
- 				}
- 
+-					continue;
+-				}
+-
 -				UnityLog::Log("Modified descriptor range.\n");
-+				UnityLog::Debug("Modified descriptor range.\n");
- 				dr.NumDescriptors--;
- 				newRanges.push_back(dr);
- 			}
-@@ -492,8 +503,14 @@ extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateRootSignature(
- 	newRange.RegisterSpace = 0;
+-				dr.NumDescriptors--;
+-				newRanges.push_back(dr);
+-			}
+-
+-			// Copy the list.
+-			v.NumDescriptorRanges = newRanges.size();
+-			for (unsigned k = 0; k < newRanges.size(); k++) {
+-				writableDescriptors[k] = newRanges.at(k);
+-			}
+-		}
+-	}
+-
+-	if (ignore || !needPlaceSrv) {
++	for (unsigned i = 0; i < rootSig.NumParameters; ++i) {
++		const auto& parameter = rootSig.pParameters[i];
++		if (parameter.ParameterType != D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE) continue;
++		for (unsigned j = 0; j < parameter.DescriptorTable.NumDescriptorRanges; ++j) {
++			const auto& range = parameter.DescriptorTable.pDescriptorRanges[j];
++			// Unity flattens register spaces when sizing these tables.
++			needPlaceSrv |= range.RangeType == D3D12_DESCRIPTOR_RANGE_TYPE_SRV
++				&& range.BaseShaderRegister + range.NumDescriptors >= srvBindlessDescriptorStart + 1;
++		}
++	}
++	if (!needPlaceSrv) {
+ 		FreeDeepCopy(&rootSig);
+-		auto ret = OrigCreateRootSignature(This, nodeMask, pBlobWithRootSignature, blobLengthInBytes, riid, ppvRootSignature);
+-		UnityLog::Debug("Created root desc [n] %p, %p\n", *ppvRootSignature, (void*)(size_t)(ret));
+-		
+-		return ret;
+-	}
++		return OrigCreateRootSignature(This, nodeMask, pBlobWithRootSignature, blobLengthInBytes, riid, ppvRootSignature);
++	}
++	auto writableParams = const_cast<D3D12_ROOT_PARAMETER*>(rootSig.pParameters);
+ 
+ 	D3D12_ROOT_PARAMETER p = {};
+ 	p.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+@@ -489,11 +420,17 @@
+ 	newRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+ 	newRange.NumDescriptors = myD3D12->numAdditionalSrv();
+ 	newRange.BaseShaderRegister = srvBindlessDescriptorStart;
+-	newRange.RegisterSpace = 0;
++	newRange.RegisterSpace = 1;
  	newRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
  
 -	p.DescriptorTable.NumDescriptorRanges = 1;
 -	p.DescriptorTable.pDescriptorRanges = &newRange;
-+	// The same descriptors are also exposed in register space 1 so raw buffers can be declared as ByteAddressBuffer[].
++	// Textures and raw buffers share the same heap entries through separate register spaces.
 +	D3D12_DESCRIPTOR_RANGE ranges[2] = { newRange, newRange };
 +	ranges[0].OffsetInDescriptorsFromTableStart = 0;
 +	ranges[1].OffsetInDescriptorsFromTableStart = 0;
-+	ranges[1].RegisterSpace = 1;
++	ranges[1].RegisterSpace = 2;
 +
 +	p.DescriptorTable.NumDescriptorRanges = 2;
 +	p.DescriptorTable.pDescriptorRanges = ranges;
  
  	// Append to the end.
  	writableParams[rootSig.NumParameters] = p;
-@@ -568,7 +585,7 @@ extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateDescriptorHeap(ID3D12De
+@@ -568,7 +505,7 @@
  			}
  		}
  
@@ -111,7 +208,7 @@ index b80535a..2475056 100644
  
  		auto res = OrigCreateDescriptorHeap(device, &pDescCopy, riid, ppvHeap);
  		if (FAILED(res) || ppvHeap == nullptr) {
-@@ -580,7 +597,11 @@ extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateDescriptorHeap(ID3D12De
+@@ -580,7 +517,11 @@
  				myD3D12->srvDescriptorHeaps.push_back(ptr);
  
  				if (hooked) {
@@ -123,7 +220,7 @@ index b80535a..2475056 100644
  				}
  			}
  		} else {
-@@ -960,28 +981,14 @@ void InstallEarlyD3D12Hooks()
+@@ -960,28 +901,14 @@
  
  extern unsigned __api_call_counter;
  
@@ -148,16 +245,17 @@ index b80535a..2475056 100644
  		CD3DX12_CPU_DESCRIPTOR_HANDLE cpuHandle(heap->GetCPUDescriptorHandleForHeapStart());
  		cpuHandle.Offset(this->srvIncrement * this->srvBaseOffset);
 -		cpuHandle.Offset(this->srvIncrement * offset);
-+		cpuHandle.Offset(this->srvIncrement * first);
- 
+-
 -		for (unsigned i = 0; i < numTextures; i++) {
 -			auto t = textures[i];
++		cpuHandle.Offset(this->srvIncrement * first);
++
 +		for (unsigned i = 0; i < count; i++) {
 +			auto t = slotEntries[first + i];
  
  			if (t.type == BindlessTextureType::None) {
  				D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-@@ -1015,6 +1022,23 @@ int RenderAPI_D3D12::SetBindlessTextures(int offset, unsigned numTextures, Bindl
+@@ -1015,6 +942,23 @@
  				goto next;
  			}
  
@@ -181,7 +279,7 @@ index b80535a..2475056 100644
  			if (t.type == BindlessTextureType::SRV) {
  				UnityLog::LogWarning("Raw SRVs are not supported on D3D12\n");
  				goto next;
-@@ -1024,10 +1048,51 @@ int RenderAPI_D3D12::SetBindlessTextures(int offset, unsigned numTextures, Bindl
+@@ -1024,8 +968,49 @@
  			cpuHandle.Offset(this->srvIncrement);
  		}
  	}
@@ -224,17 +322,14 @@ index b80535a..2475056 100644
 +		WriteDescriptors(heap, (unsigned)offset, numTextures);
  
  	return 1;
- }
- 
-+int RenderAPI_D3D12::GetBindlessCapacity() {
-+	return isInitialized && !hookedDescriptorHeaps.empty() ? (int)numAdditionalSrv() : 0;
 +}
 +
- void RenderAPI_D3D12::HookSetFunctions() {
- 	
++int RenderAPI_D3D12::GetBindlessCapacity() {
++	return isInitialized && !hookedDescriptorHeaps.empty() ? (int)numAdditionalSrv() : 0;
  }
+ 
+ void RenderAPI_D3D12::HookSetFunctions() {
 diff --git a/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.h b/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.h
-index ed5ccf0..55b0673 100644
 --- a/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.h
 +++ b/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.h
 @@ -12,6 +12,8 @@
@@ -246,7 +341,7 @@ index ed5ccf0..55b0673 100644
  #include "RenderAPI.h"
  
  class RenderAPI_D3D12 : public RenderAPI
-@@ -27,14 +29,15 @@ public:
+@@ -27,14 +29,15 @@
      );
  
      virtual void SetCurrentBindlessOffset(void* eventData) override;
@@ -264,21 +359,20 @@ index ed5ccf0..55b0673 100644
      }
  
      uint32_t srvBaseOffset;
-@@ -49,6 +52,12 @@ public:
+@@ -48,6 +51,12 @@
+ 
      std::vector<ID3D12DescriptorHeap*> srvDescriptorHeaps{};
      std::vector<ID3D12DescriptorHeap*> hookedDescriptorHeaps{};
- 
++
 +    // Every entry is mirrored so heaps created later receive it, and keeps a reference to its resource.
 +    std::vector<BindlessTexture> slotEntries{};
 +    std::vector<IUnknown*> slotResources{};
 +    std::mutex slotMutex;
 +    void WriteDescriptors(ID3D12DescriptorHeap* heap, unsigned first, unsigned count);
-+
+ 
  private:
      int currentFrameBindlessOffset;
- 
 diff --git a/NativePlugin.Bindless/PluginSource/source/RenderingPlugin.cpp b/NativePlugin.Bindless/PluginSource/source/RenderingPlugin.cpp
-index 7c87755..6fa7f6e 100644
 --- a/NativePlugin.Bindless/PluginSource/source/RenderingPlugin.cpp
 +++ b/NativePlugin.Bindless/PluginSource/source/RenderingPlugin.cpp
 @@ -11,7 +11,7 @@
@@ -290,23 +384,37 @@ index 7c87755..6fa7f6e 100644
  
  static bool InitializeHooks(){
  	if(MH_Initialize() != MH_STATUS::MH_OK){
-@@ -37,6 +37,7 @@
+@@ -37,6 +37,9 @@
  IUnityGraphics* s_Graphics = NULL;
  
  extern void InstallEarlyD3D12Hooks();
 +extern void ShutdownShaderExecutionReordering();
++extern void ShutdownInlineRayTracing();
++extern "C" int UnityRhiInitializeInlineRayTracing();
  extern "C" UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API UnityPluginLoad(IUnityInterfaces * unityInterfaces)
  {
  	s_UnityInterfaces = unityInterfaces;
-@@ -59,6 +60,7 @@
+@@ -59,6 +62,8 @@
  
  extern "C" UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API UnityPluginUnload()
  {
++	ShutdownInlineRayTracing();
 +	ShutdownShaderExecutionReordering();
  	s_Graphics->UnregisterDeviceEventCallback(OnGraphicsDeviceEvent);
  }
  
-@@ -119,4 +119,9 @@ extern "C" UNITY_INTERFACE_EXPORT int UNITY_INTERFACE_API MeetemBindless_SetBind
+@@ -85,6 +90,10 @@
+ 		s_CurrentAPI->ProcessDeviceEvent(eventType, s_UnityInterfaces);
+ 	}
+ 
++	if (eventType == kUnityGfxDeviceEventInitialize && s_DeviceType == kUnityGfxRendererD3D12)
++		UnityRhiInitializeInlineRayTracing();
++	if (eventType == kUnityGfxDeviceEventShutdown)
++		ShutdownInlineRayTracing();
+ 	// Cleanup graphics API implementation upon shutdown
+ 	if (eventType == kUnityGfxDeviceEventShutdown)
+ 	{
+@@ -119,4 +128,9 @@
  		return 0;
  
  	return s_CurrentAPI->SetBindlessTextures(offset,(unsigned)numTextures, textures);
