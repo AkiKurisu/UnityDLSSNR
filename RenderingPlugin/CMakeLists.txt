@@ -3,8 +3,6 @@ project(UnityRHINative CXX)
 
 include(FetchContent)
 
-# Binaries land in <repo>/_Bin/<config>. 3-Pack.bat copies them into
-# <repo>/Build/top.kuanmi.unityrhi.native (and the native UPM source tree).
 get_filename_component(UNITYRHI_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${UNITYRHI_REPO_ROOT}/_Bin" CACHE PATH
     "Native plugin binaries (UnityRHI, NRI, NRD, …)" FORCE)

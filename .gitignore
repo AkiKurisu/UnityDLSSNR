@@ -11,7 +11,7 @@ RenderingPlugin/.vs/
 RenderingPlugin/TestResults/
 
 # Built plugins belong in Build/, not the source package
-Packages/top.kuanmi.unityrhi.native/Plugins/**/*.dll
+Packages/com.kurisu.unityrhi/Plugins/**/*.dll
 
 # Visual Studio / CMake
 .vs/

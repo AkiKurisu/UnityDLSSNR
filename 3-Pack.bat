@@ -6,8 +6,8 @@ set CONFIG=%~1
 if "%CONFIG%"=="" set CONFIG=Release
 
 set BIN=%cd%\_Bin\%CONFIG%
-set SRC=%cd%\Packages\top.kuanmi.unityrhi.native
-set DST=%cd%\Build\top.kuanmi.unityrhi.native
+set SRC=%cd%\Packages\com.kurisu.unityrhi
+set DST=%cd%\Build\com.kurisu.unityrhi
 set PLUGINS=%DST%\Plugins\x86_64
 
 if not exist "%BIN%\UnityRHI.dll" (
@@ -16,7 +16,7 @@ if not exist "%BIN%\UnityRHI.dll" (
     exit /B 1
 )
 
-echo Packing native UPM into "%DST%"
+echo Packing UnityRHI UPM into "%DST%"
 
 if exist "%DST%" rd /q /s "%DST%"
 mkdir "%DST%" >nul
@@ -64,11 +64,11 @@ if /I "%CONFIG%"=="Debug" (
 )
 
 echo.
-echo Packed native UPM:
+echo Packed UnityRHI UPM:
 echo   %DST%
 echo.
-echo Add the managed package to Packages/manifest.json:
-echo   "top.kuanmi.unityrhi": "file:%cd:\=/%/Packages/top.kuanmi.unityrhi"
+echo Add the package to Packages/manifest.json:
+echo   "com.kurisu.unityrhi": "file:%cd:\=/%/Build/com.kurisu.unityrhi"
 exit /B 0
 
 :copy_required

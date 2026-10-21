@@ -14,12 +14,12 @@ UnityRHI's native NGX plugin.
 - Unity 6.3 with URP 17+ and RenderGraph enabled.
 - Super Resolution also needs the scripting define `ENABLE_UPSCALER_FRAMEWORK`.
 - Windows x64 using Direct3D 12.
-- `top.kuanmi.unityrhi` and packed `top.kuanmi.unityrhi.native` (`nvngx_dlss.dll` for SR, `nvngx_dlssg.dll` for FG, `nvngx_dlssnr.dll` for NR).
+- The packed `com.kurisu.unityrhi` package (`nvngx_dlss.dll` for SR, `nvngx_dlssg.dll` for FG, `nvngx_dlssnr.dll` for NR).
 - NVIDIA hardware/driver that exposes the corresponding NGX feature (`RhiCore.IsNgxDlssAvailable` / `RhiCore.IsNgxFrameGenerationAvailable` / `RhiCore.IsDlssNrAvailable`).
 
 ## Super Resolution setup
 
-1. Install `top.kuanmi.unityrhi` / `top.kuanmi.unityrhi.native`. Enable Direct3D 12, restart the Editor.
+1. Install `com.kurisu.unityrhi`. Enable Direct3D 12, restart the Editor.
 2. Add this package. Ensure **Player Settings → Scripting Define Symbols** includes `ENABLE_UPSCALER_FRAMEWORK`.
 3. On the active **URP Asset**:
    - Upscaling Filter = **IUpscaler**
@@ -123,7 +123,7 @@ the same render-resolution depth/MV. Displayed FPS with FG enabled is
 - Unity 6.3，URP 17+，RenderGraph。
 - 超分还需脚本宏 `ENABLE_UPSCALER_FRAMEWORK`。
 - Windows x64 + D3D12。
-- `top.kuanmi.unityrhi` 与 `top.kuanmi.unityrhi.native`。
+- `com.kurisu.unityrhi` 完整包。
 - 对应 NGX 能力：`RhiCore.IsNgxDlssAvailable` / `RhiCore.IsNgxFrameGenerationAvailable` / `RhiCore.IsDlssNrAvailable`。
 
 ## 超分设置
