@@ -93,10 +93,9 @@ bool LoadCompiler()
         FreeLibrary(dxcModule);
         dxcModule = nullptr;
     }
-    HMODULE self = nullptr;
+    HMODULE self = GetModuleHandleW(L"UnityRHI.dll");
     wchar_t path[MAX_PATH];
-    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-        reinterpret_cast<LPCWSTR>(&LoadCompiler), &self)) return false;
+    if (!self) return false;
     DWORD length = GetModuleFileNameW(self, path, MAX_PATH);
     if (!length || length >= MAX_PATH) return false;
     wchar_t* filename = wcsrchr(path, L'\\');

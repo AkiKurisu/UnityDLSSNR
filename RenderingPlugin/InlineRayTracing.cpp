@@ -9,6 +9,7 @@
 #include <IUnityGraphics.h>
 #include <IUnityGraphicsD3D12.h>
 #include "UAL/UnityLog.h"
+#include <array>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -40,6 +41,7 @@ struct Program
 struct Compute
 {
     ComPtr<ID3D12RootSignature> root;
+    ComPtr<ID3D12ShaderReflection> reflection;
 };
 struct Recording
 {
@@ -61,8 +63,8 @@ using CreateStream = HRESULT(STDMETHODCALLTYPE*)(ID3D12Device2*, const D3D12_PIP
 using SetPipeline = void(STDMETHODCALLTYPE*)(ID3D12GraphicsCommandList*, ID3D12PipelineState*);
 using Dispatch = void(STDMETHODCALLTYPE*)(ID3D12GraphicsCommandList*, UINT, UINT, UINT);
 CreateStream originalStream;
-SetPipeline originalSet;
-Dispatch originalDispatch;
+std::array<SetPipeline, 8> originalSets{};
+std::array<Dispatch, 8> originalDispatches{};
 
 bool Install(void* target, void* replacement, void** original)
 {
@@ -78,6 +80,8 @@ void Capture(const D3D12_COMPUTE_PIPELINE_STATE_DESC& desc, void* result)
 {
     {
         std::lock_guard lock(gate);
+        if (!createDxc) createDxc = GetShaderCompiler();
+        if (!createDxc) return;
         computes.erase(static_cast<ID3D12PipelineState*>(result));
     }
     ComPtr<IDxcLibrary> library;
@@ -99,7 +103,7 @@ void Capture(const D3D12_COMPUTE_PIPELINE_STATE_DESC& desc, void* result)
         reflection->GetResourceBindingDesc(i, &binding);
         if ((binding.Space != 1 && binding.Space != 2) || binding.BindPoint != 63 || binding.BindCount != 65536) continue;
         std::lock_guard lock(gate);
-        computes[static_cast<ID3D12PipelineState*>(result)] = {desc.pRootSignature};
+        computes[static_cast<ID3D12PipelineState*>(result)] = {desc.pRootSignature, reflection};
         break;
     }
 }
@@ -134,8 +138,64 @@ HRESULT STDMETHODCALLTYPE CreateFromStream(ID3D12Device2* d, const D3D12_PIPELIN
     return hr;
 }
 
-HRESULT Build(Program& program, ID3D12RootSignature* root, Pipeline& pipeline)
+HRESULT ValidateBindings(Program& program, ID3D12ShaderReflection* carrier)
 {
+    ComPtr<IDxcUtils> utils;
+    ComPtr<ID3D12LibraryReflection> reflection;
+    HRESULT hr = createDxc(CLSID_DxcUtils, IID_PPV_ARGS(&utils));
+    if (FAILED(hr)) return hr;
+    DxcBuffer code{program.code.data(), program.code.size(), 0};
+    hr = utils->CreateReflection(&code, IID_PPV_ARGS(&reflection));
+    if (FAILED(hr)) return hr;
+    auto function = reflection->GetFunctionByIndex(0);
+    if (!function) return E_INVALIDARG;
+    D3D12_FUNCTION_DESC desc{};
+    hr = function->GetDesc(&desc);
+    if (FAILED(hr)) return hr;
+    D3D12_SHADER_DESC carrierDesc{};
+    hr = carrier->GetDesc(&carrierDesc);
+    if (FAILED(hr)) return hr;
+    for (UINT i = 0; i < desc.BoundResources; ++i)
+    {
+        D3D12_SHADER_INPUT_BIND_DESC expected{}, actual{};
+        hr = function->GetResourceBindingDesc(i, &expected);
+        if (FAILED(hr)) return hr;
+        bool extension = strcmp(expected.Name, "g_NvidiaExt") == 0;
+        bool found = false;
+        for (UINT j = 0; j < carrierDesc.BoundResources; ++j)
+        {
+            if (FAILED(carrier->GetResourceBindingDesc(j, &actual))) continue;
+            if (expected.BindPoint == actual.BindPoint && expected.Space == actual.Space &&
+                (extension ? D3D_SIT_UAV_RWSTRUCTURED : expected.Type) == actual.Type)
+            {
+                found = true;
+                break;
+            }
+        }
+        if (!found || expected.BindCount != actual.BindCount || expected.Dimension != actual.Dimension || expected.ReturnType != actual.ReturnType)
+        {
+            UnityLog::LogError("Inline RayGen binding mismatch: %s.\n", expected.Name);
+            return E_INVALIDARG;
+        }
+        if (expected.Type == D3D_SIT_CBUFFER)
+        {
+            D3D12_SHADER_BUFFER_DESC a{}, b{};
+            if (FAILED(function->GetConstantBufferByName(expected.Name)->GetDesc(&a)) ||
+                FAILED(carrier->GetConstantBufferByIndex(actual.uID)->GetDesc(&b)) || a.Size != b.Size)
+            {
+                UnityLog::LogError("Inline RayGen constant buffer size mismatch: %s.\n", expected.Name);
+                return E_INVALIDARG;
+            }
+        }
+    }
+    return S_OK;
+}
+
+HRESULT Build(Program& program, const Compute& compute, Pipeline& pipeline)
+{
+    HRESULT hr = ValidateBindings(program, compute.reflection.Get());
+    if (FAILED(hr)) return hr;
+    ID3D12RootSignature* root = compute.root.Get();
     D3D12_DXIL_LIBRARY_DESC library{};
     library.DXILLibrary = {program.code.data(), program.code.size()};
     D3D12_RAYTRACING_SHADER_CONFIG shader{0, 0};
@@ -146,7 +206,7 @@ HRESULT Build(Program& program, ID3D12RootSignature* root, Pipeline& pipeline)
         {D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_SHADER_CONFIG, &shader},
         {D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG, &config}};
     D3D12_STATE_OBJECT_DESC desc{D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE, 4, objects};
-    HRESULT hr = device->CreateStateObject(&desc, IID_PPV_ARGS(&pipeline.state));
+    hr = device->CreateStateObject(&desc, IID_PPV_ARGS(&pipeline.state));
     if (FAILED(hr)) return hr;
     ComPtr<ID3D12StateObjectProperties> properties;
     hr = pipeline.state.As(&properties);
@@ -171,12 +231,15 @@ HRESULT Build(Program& program, ID3D12RootSignature* root, Pipeline& pipeline)
     return S_OK;
 }
 
+template<size_t Index>
 void STDMETHODCALLTYPE Set(ID3D12GraphicsCommandList* list, ID3D12PipelineState* state)
 {
-    originalSet(list, state);
+    originalSets[Index](list, state);
     std::lock_guard lock(gate);
     recordings[list].state = state;
 }
+
+template<size_t Index>
 void STDMETHODCALLTYPE DispatchList(ID3D12GraphicsCommandList* list, UINT x, UINT y, UINT z)
 {
     std::unique_lock lock(gate);
@@ -185,22 +248,24 @@ void STDMETHODCALLTYPE DispatchList(ID3D12GraphicsCommandList* list, UINT x, UIN
     if (!program)
     {
         lock.unlock();
-        originalDispatch(list, x, y, z);
+        originalDispatches[Index](list, x, y, z);
         return;
     }
+    if (FAILED(program->status)) return;
     auto compute = computes.find(recording.state);
     if (compute != computes.end())
     {
         auto& pipeline = program->pipelines[compute->second.root.Get()];
         if (pipeline.status == S_FALSE)
         {
-            pipeline.status = Build(*program, compute->second.root.Get(), pipeline);
+            pipeline.status = Build(*program, compute->second, pipeline);
             if (FAILED(pipeline.status))
-                UnityLog::LogError("Inline RayGen '%ls' pipeline failed (0x%08X). Using Compute.\n", program->entry.c_str(), pipeline.status);
+                UnityLog::LogError("Inline RayGen '%ls' pipeline failed (0x%08X). Dispatch stopped.\n", program->entry.c_str(), pipeline.status);
         }
         program->status = pipeline.status;
         ComPtr<ID3D12GraphicsCommandList4> rayList;
-        if (SUCCEEDED(pipeline.status) && SUCCEEDED(list->QueryInterface(IID_PPV_ARGS(&rayList))))
+        if (SUCCEEDED(pipeline.status)) program->status = list->QueryInterface(IID_PPV_ARGS(&rayList));
+        if (SUCCEEDED(program->status))
         {
             D3D12_DISPATCH_RAYS_DESC rays{};
             rays.RayGenerationShaderRecord = {pipeline.table->GetGPUVirtualAddress(), D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES};
@@ -209,15 +274,34 @@ void STDMETHODCALLTYPE DispatchList(ID3D12GraphicsCommandList* list, UINT x, UIN
             rays.Depth = z;
             rayList->SetPipelineState1(pipeline.state.Get());
             rayList->DispatchRays(&rays);
-            originalSet(list, recording.state);
+            auto state = recording.state;
             program->fence = api->GetNextFrameFenceValue();
             ++program->dispatches;
+            lock.unlock();
+            list->SetPipelineState(state);
             return;
         }
     }
-    else program->status = E_PENDING;
-    lock.unlock();
-    originalDispatch(list, x, y, z);
+    else
+    {
+        program->status = E_UNEXPECTED;
+        UnityLog::LogError("Inline RayGen '%ls' binding carrier pipeline was not captured.\n", program->entry.c_str());
+    }
+    UnityLog::LogError("Inline RayGen '%ls' dispatch failed (0x%08X).\n", program->entry.c_str(), program->status);
+}
+
+template<size_t Index = 0>
+bool InstallCommand(void* target, bool dispatch)
+{
+    for (void* hook : hooks) if (hook == target) return true;
+    if constexpr (Index == originalSets.size()) return false;
+    else
+    {
+        void** original = dispatch ? reinterpret_cast<void**>(&originalDispatches[Index]) : reinterpret_cast<void**>(&originalSets[Index]);
+        if (*original) return InstallCommand<Index + 1>(target, dispatch);
+        void* replacement = dispatch ? reinterpret_cast<void*>(&DispatchList<Index>) : reinterpret_cast<void*>(&Set<Index>);
+        return Install(target, replacement, original);
+    }
 }
 
 void UNITY_INTERFACE_API Begin(int, void* data)
@@ -227,15 +311,22 @@ void UNITY_INTERFACE_API Begin(int, void* data)
     std::erase_if(retired, [completed](const auto& p) { return p->fence <= completed && p.use_count() == 1; });
     UnityGraphicsD3D12RecordingState state{};
     auto program = programs.find(reinterpret_cast<uintptr_t>(data));
-    if (program == programs.end() || !api->CommandRecordingState(&state) || !state.commandList) return;
-    void** methods = *reinterpret_cast<void***>(state.commandList);
-    if (!Install(methods[25], reinterpret_cast<void*>(&Set), reinterpret_cast<void**>(&originalSet)) ||
-        !Install(methods[14], reinterpret_cast<void*>(&DispatchList), reinterpret_cast<void**>(&originalDispatch)))
+    if (program == programs.end()) return;
+    if (!api->CommandRecordingState(&state) || !state.commandList)
     {
-        program->second->status = E_FAIL;
+        program->second->status = E_UNEXPECTED;
+        UnityLog::LogError("Inline RayGen could not obtain Unity command recording state.\n");
         return;
     }
     recordings[state.commandList].program = program->second;
+    void** methods = *reinterpret_cast<void***>(state.commandList);
+    if (!InstallCommand(methods[25], false) ||
+        !InstallCommand(methods[14], true))
+    {
+        program->second->status = E_FAIL;
+        UnityLog::LogError("Inline RayGen command list hook installation failed.\n");
+        return;
+    }
 }
 }
 
@@ -244,14 +335,22 @@ extern "C" __declspec(dllexport) int UnityRhiInitializeInlineRayTracing()
     std::lock_guard lock(gate);
     if (device) return eventId;
     api = s_UnityInterfaces ? s_UnityInterfaces->Get<IUnityGraphicsD3D12v7>() : nullptr;
-    if (!api || !api->GetDevice() || FAILED(api->GetDevice()->QueryInterface(IID_PPV_ARGS(&device)))) return 0;
-    createDxc = GetShaderCompiler();
-    if (!createDxc) { device.Reset(); return 0; }
+    if (!api || !api->GetDevice() || FAILED(api->GetDevice()->QueryInterface(IID_PPV_ARGS(&device))))
+    {
+        UnityLog::LogError("Inline RayGen requires Unity D3D12 and ID3D12Device5.\n");
+        return 0;
+    }
     MH_STATUS status = MH_Initialize();
-    if (status != MH_OK && status != MH_ERROR_ALREADY_INITIALIZED) { device.Reset(); return 0; }
+    if (status != MH_OK && status != MH_ERROR_ALREADY_INITIALIZED)
+    {
+        UnityLog::LogError("Inline RayGen hook initialization failed: %d.\n", status);
+        device.Reset();
+        return 0;
+    }
     void** methods = *reinterpret_cast<void***>(device.Get());
     if (!Install(methods[47], reinterpret_cast<void*>(&CreateFromStream), reinterpret_cast<void**>(&originalStream)))
     {
+        UnityLog::LogError("Inline RayGen pipeline capture hook installation failed.\n");
         device.Reset();
         return 0;
     }
@@ -273,14 +372,24 @@ void ResetInlineRayTracing(ID3D12GraphicsCommandList* list, ID3D12PipelineState*
 
 void CaptureInlineRayTracing(const D3D12_COMPUTE_PIPELINE_STATE_DESC& desc, void* result)
 {
-    if (createDxc) Capture(desc, result);
+    if (device) Capture(desc, result);
 }
 
 extern "C" __declspec(dllexport) uintptr_t UnityRhiCreateInlineRayTracing(const void* code, int size, const wchar_t* entry, UINT x, UINT y, int ser)
 {
     std::lock_guard lock(gate);
-    if (!device || !code || size <= 0 || !entry || !x || !y ||
-        (ser && !UnityRhiInitializeShaderExecutionReordering(device.Get()))) return 0;
+    if (!device || !code || size <= 0 || !entry || !x || !y) return 0;
+    if (!createDxc) createDxc = GetShaderCompiler();
+    if (!createDxc)
+    {
+        UnityLog::LogError("Inline RayGen DXC reflection is unavailable.\n");
+        return 0;
+    }
+    if (ser && !UnityRhiInitializeShaderExecutionReordering(device.Get()))
+    {
+        UnityLog::LogError("Inline RayGen SER initialization failed.\n");
+        return 0;
+    }
     auto program = std::make_shared<Program>();
     program->code.assign(static_cast<const char*>(code), static_cast<const char*>(code) + size);
     program->entry = entry;
@@ -323,6 +432,6 @@ void ShutdownInlineRayTracing()
     api = nullptr;
     eventId = 0;
     originalStream = nullptr;
-    originalSet = nullptr;
-    originalDispatch = nullptr;
+    originalSets.fill(nullptr);
+    originalDispatches.fill(nullptr);
 }
