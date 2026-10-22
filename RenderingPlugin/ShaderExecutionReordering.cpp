@@ -86,13 +86,6 @@ HRESULT STDMETHODCALLTYPE CreateWithExtensions(ID3D12Device5* device, const D3D1
 bool LoadCompiler()
 {
     if (createDxc) return true;
-    if (GetModuleHandleExW(0, L"dxcompiler.dll", &dxcModule))
-    {
-        createDxc = reinterpret_cast<DxcCreateInstanceProc>(GetProcAddress(dxcModule, "DxcCreateInstance"));
-        if (createDxc) return true;
-        FreeLibrary(dxcModule);
-        dxcModule = nullptr;
-    }
     HMODULE self = GetModuleHandleW(L"UnityRHI.dll");
     wchar_t path[MAX_PATH];
     if (!self) return false;

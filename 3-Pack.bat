@@ -21,7 +21,7 @@ echo Packing UnityRHI UPM into "%DST%"
 if exist "%DST%" rd /q /s "%DST%"
 mkdir "%DST%" >nul
 
-robocopy "%SRC%" "%DST%" /E /NFL /NDL /NJH /NJS /nc /ns /np /XF *.dll *.pdb >nul
+robocopy "%SRC%" "%DST%" /E /NFL /NDL /NJH /NJS /nc /ns /np /XF *.dll *.pdb *.exe >nul
 if %ERRORLEVEL% GEQ 8 exit /B 1
 
 call :copy_required "%BIN%\UnityRHI.dll" "%PLUGINS%\"
@@ -35,6 +35,8 @@ if errorlevel 1 exit /B 1
 call :copy_required "%BIN%\GfxPluginIllusionRHI.dll" "%PLUGINS%\"
 if errorlevel 1 exit /B 1
 call :copy_required "%BIN%\NRD.dll" "%PLUGINS%\"
+if errorlevel 1 exit /B 1
+call :copy_required "%BIN%\dxc.exe" "%PLUGINS%\"
 if errorlevel 1 exit /B 1
 call :copy_required "%BIN%\dxcompiler.dll" "%PLUGINS%\"
 if errorlevel 1 exit /B 1

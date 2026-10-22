@@ -29,9 +29,10 @@ FetchContent_MakeAvailable(unityrhi_dxc)
 set(UNITYRHI_DXC_INCLUDE "${unityrhi_dxc_SOURCE_DIR}/inc")
 set(UNITYRHI_DXC_BIN "${unityrhi_dxc_SOURCE_DIR}/bin/x64")
 if(NOT EXISTS "${UNITYRHI_DXC_BIN}/dxcompiler.dll"
-   OR NOT EXISTS "${UNITYRHI_DXC_BIN}/dxil.dll")
+   OR NOT EXISTS "${UNITYRHI_DXC_BIN}/dxil.dll"
+   OR NOT EXISTS "${UNITYRHI_DXC_BIN}/dxc.exe")
     message(FATAL_ERROR
-        "DXC FetchContent did not produce dxcompiler.dll / dxil.dll under '${UNITYRHI_DXC_BIN}'.")
+        "DXC FetchContent did not produce dxc.exe / dxcompiler.dll / dxil.dll under '${UNITYRHI_DXC_BIN}'.")
 endif()
 if(NOT EXISTS "${UNITYRHI_DXC_INCLUDE}/dxcapi.h")
     message(FATAL_ERROR
@@ -127,6 +128,9 @@ function(unityrhi_copy_dxc target)
             "$<TARGET_FILE_DIR:${target}>"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${UNITYRHI_DXC_BIN}/dxil.dll"
+            "$<TARGET_FILE_DIR:${target}>"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${UNITYRHI_DXC_BIN}/dxc.exe"
             "$<TARGET_FILE_DIR:${target}>"
         COMMENT "Copying DXC runtime next to ${target}"
     )

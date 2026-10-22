@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <d3d12.h>
+#include <d3d12sdklayers.h>
 #include <dxgi1_6.h>
 #include <d3d12shader.h>
 #include <dxcapi.h>
@@ -9,6 +10,7 @@
 #include <IUnityGraphics.h>
 #include <IUnityGraphicsD3D12.h>
 #include "UAL/UnityLog.h"
+#include <algorithm>
 #include <array>
 #include <map>
 #include <memory>
@@ -27,12 +29,19 @@ struct Pipeline
 {
     ComPtr<ID3D12StateObject> state;
     ComPtr<ID3D12Resource> table;
+    UINT hitCount = 0;
     HRESULT status = S_FALSE;
+};
+struct Material
+{
+    std::vector<char> code;
+    std::wstring closest, candidate, hitGroup, candidateGroup;
 };
 struct Program
 {
     std::vector<char> code;
     std::wstring entry;
+    std::vector<std::shared_ptr<Material>> materials;
     std::map<ID3D12RootSignature*, Pipeline> pipelines;
     UINT threadsX, threadsY;
     UINT64 fence = 0, dispatches = 0;
@@ -56,6 +65,7 @@ int eventId = 0;
 uintptr_t nextHandle = 1;
 std::map<uintptr_t, std::shared_ptr<Program>> programs;
 std::vector<std::shared_ptr<Program>> retired;
+std::map<std::wstring, std::weak_ptr<Material>> materialCache;
 std::map<ID3D12PipelineState*, Compute> computes;
 std::map<ID3D12GraphicsCommandList*, Recording> recordings;
 std::vector<void*> hooks;
@@ -144,47 +154,59 @@ HRESULT ValidateBindings(Program& program, ID3D12ShaderReflection* carrier)
     ComPtr<ID3D12LibraryReflection> reflection;
     HRESULT hr = createDxc(CLSID_DxcUtils, IID_PPV_ARGS(&utils));
     if (FAILED(hr)) return hr;
-    DxcBuffer code{program.code.data(), program.code.size(), 0};
-    hr = utils->CreateReflection(&code, IID_PPV_ARGS(&reflection));
-    if (FAILED(hr)) return hr;
-    auto function = reflection->GetFunctionByIndex(0);
-    if (!function) return E_INVALIDARG;
-    D3D12_FUNCTION_DESC desc{};
-    hr = function->GetDesc(&desc);
-    if (FAILED(hr)) return hr;
-    D3D12_SHADER_DESC carrierDesc{};
-    hr = carrier->GetDesc(&carrierDesc);
-    if (FAILED(hr)) return hr;
-    for (UINT i = 0; i < desc.BoundResources; ++i)
+    std::vector<const std::vector<char>*> libraries{&program.code};
+    for (const auto& material : program.materials)
+        libraries.push_back(&material->code);
+    for (auto bytes : libraries)
     {
-        D3D12_SHADER_INPUT_BIND_DESC expected{}, actual{};
-        hr = function->GetResourceBindingDesc(i, &expected);
+        DxcBuffer code{bytes->data(), bytes->size(), 0};
+        hr = utils->CreateReflection(&code, IID_PPV_ARGS(&reflection));
         if (FAILED(hr)) return hr;
-        bool extension = strcmp(expected.Name, "g_NvidiaExt") == 0;
-        bool found = false;
-        for (UINT j = 0; j < carrierDesc.BoundResources; ++j)
+        D3D12_LIBRARY_DESC libraryDesc{};
+        if (FAILED(reflection->GetDesc(&libraryDesc))) return E_INVALIDARG;
+        for (UINT functionIndex = 0; functionIndex < libraryDesc.FunctionCount; ++functionIndex)
         {
-            if (FAILED(carrier->GetResourceBindingDesc(j, &actual))) continue;
-            if (expected.BindPoint == actual.BindPoint && expected.Space == actual.Space &&
-                (extension ? D3D_SIT_UAV_RWSTRUCTURED : expected.Type) == actual.Type)
+            auto function = reflection->GetFunctionByIndex(functionIndex);
+            if (!function) return E_INVALIDARG;
+            D3D12_FUNCTION_DESC desc{};
+            hr = function->GetDesc(&desc);
+            if (FAILED(hr)) return hr;
+            D3D12_SHADER_DESC carrierDesc{};
+            hr = carrier->GetDesc(&carrierDesc);
+            if (FAILED(hr)) return hr;
+            for (UINT i = 0; i < desc.BoundResources; ++i)
             {
-                found = true;
-                break;
-            }
-        }
-        if (!found || expected.BindCount != actual.BindCount || expected.Dimension != actual.Dimension || expected.ReturnType != actual.ReturnType)
-        {
-            UnityLog::LogError("Inline RayGen binding mismatch: %s.\n", expected.Name);
-            return E_INVALIDARG;
-        }
-        if (expected.Type == D3D_SIT_CBUFFER)
-        {
-            D3D12_SHADER_BUFFER_DESC a{}, b{};
-            if (FAILED(function->GetConstantBufferByName(expected.Name)->GetDesc(&a)) ||
-                FAILED(carrier->GetConstantBufferByIndex(actual.uID)->GetDesc(&b)) || a.Size != b.Size)
-            {
-                UnityLog::LogError("Inline RayGen constant buffer size mismatch: %s.\n", expected.Name);
-                return E_INVALIDARG;
+                D3D12_SHADER_INPUT_BIND_DESC expected{}, actual{};
+                hr = function->GetResourceBindingDesc(i, &expected);
+                if (FAILED(hr)) return hr;
+                bool extension = strcmp(expected.Name, "g_NvidiaExt") == 0;
+                bool found = false;
+                for (UINT j = 0; j < carrierDesc.BoundResources; ++j)
+                {
+                    if (FAILED(carrier->GetResourceBindingDesc(j, &actual))) continue;
+                    if (expected.BindPoint == actual.BindPoint && expected.Space == actual.Space &&
+                        (extension ? D3D_SIT_UAV_RWSTRUCTURED : expected.Type) == actual.Type)
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found || expected.BindCount != actual.BindCount || expected.Dimension != actual.Dimension ||
+                    expected.ReturnType != actual.ReturnType)
+                {
+                    UnityLog::LogError("Inline RayGen binding mismatch: %s.\n", expected.Name);
+                    return E_INVALIDARG;
+                }
+                if (expected.Type == D3D_SIT_CBUFFER)
+                {
+                    D3D12_SHADER_BUFFER_DESC a{}, b{};
+                    if (FAILED(function->GetConstantBufferByName(expected.Name)->GetDesc(&a)) ||
+                        FAILED(carrier->GetConstantBufferByIndex(actual.uID)->GetDesc(&b)) || a.Size != b.Size)
+                    {
+                        UnityLog::LogError("Inline RayGen constant buffer size mismatch: %s.\n", expected.Name);
+                        return E_INVALIDARG;
+                    }
+                }
             }
         }
     }
@@ -196,18 +218,68 @@ HRESULT Build(Program& program, const Compute& compute, Pipeline& pipeline)
     HRESULT hr = ValidateBindings(program, compute.reflection.Get());
     if (FAILED(hr)) return hr;
     ID3D12RootSignature* root = compute.root.Get();
-    D3D12_DXIL_LIBRARY_DESC library{};
-    library.DXILLibrary = {program.code.data(), program.code.size()};
-    D3D12_RAYTRACING_SHADER_CONFIG shader{0, 0};
+    std::vector<D3D12_DXIL_LIBRARY_DESC> libraries(1);
+    libraries.reserve(1 + program.materials.size());
+    libraries[0].DXILLibrary = {program.code.data(), program.code.size()};
+    D3D12_EXPORT_DESC raygenExport{program.entry.c_str(), nullptr, D3D12_EXPORT_FLAG_NONE};
+    libraries[0].NumExports = 1;
+    libraries[0].pExports = &raygenExport;
+    std::vector<std::array<D3D12_EXPORT_DESC, 2>> exports;
+    exports.reserve(program.materials.size());
+    std::vector<const Material*> included;
+    std::vector<D3D12_HIT_GROUP_DESC> groups;
+    groups.reserve(program.materials.size() * 2);
+    for (size_t i = 0; i < program.materials.size(); ++i)
+    {
+        const auto& material = program.materials[i];
+        if (std::find(included.begin(), included.end(), material.get()) != included.end()) continue;
+        included.push_back(material.get());
+        D3D12_DXIL_LIBRARY_DESC library{};
+        library.DXILLibrary = {material->code.data(), material->code.size()};
+        exports.push_back({D3D12_EXPORT_DESC{material->closest.c_str(), nullptr, D3D12_EXPORT_FLAG_NONE},
+                           D3D12_EXPORT_DESC{material->candidate.c_str(), nullptr, D3D12_EXPORT_FLAG_NONE}});
+        library.NumExports = 2;
+        library.pExports = exports.back().data();
+        libraries.push_back(library);
+        D3D12_HIT_GROUP_DESC hit{};
+        hit.Type = D3D12_HIT_GROUP_TYPE_TRIANGLES;
+        hit.HitGroupExport = material->hitGroup.c_str();
+        hit.ClosestHitShaderImport = material->closest.c_str();
+        groups.push_back(hit);
+        hit.HitGroupExport = material->candidateGroup.c_str();
+        hit.ClosestHitShaderImport = material->candidate.c_str();
+        groups.push_back(hit);
+    }
+    D3D12_RAYTRACING_SHADER_CONFIG shader{112, 8};
     D3D12_RAYTRACING_PIPELINE_CONFIG config{1};
-    D3D12_STATE_SUBOBJECT objects[] = {
-        {D3D12_STATE_SUBOBJECT_TYPE_DXIL_LIBRARY, &library},
-        {D3D12_STATE_SUBOBJECT_TYPE_GLOBAL_ROOT_SIGNATURE, &root},
-        {D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_SHADER_CONFIG, &shader},
-        {D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG, &config}};
-    D3D12_STATE_OBJECT_DESC desc{D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE, 4, objects};
+    std::vector<D3D12_STATE_SUBOBJECT> objects;
+    for (auto& library : libraries)
+        objects.push_back({D3D12_STATE_SUBOBJECT_TYPE_DXIL_LIBRARY, &library});
+    for (auto& group : groups)
+        objects.push_back({D3D12_STATE_SUBOBJECT_TYPE_HIT_GROUP, &group});
+    objects.push_back({D3D12_STATE_SUBOBJECT_TYPE_GLOBAL_ROOT_SIGNATURE, &root});
+    objects.push_back({D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_SHADER_CONFIG, &shader});
+    objects.push_back({D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG, &config});
+    D3D12_STATE_OBJECT_DESC desc{D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE, UINT(objects.size()), objects.data()};
+    ComPtr<ID3D12InfoQueue> diagnostics;
+    device.As(&diagnostics);
+    UINT64 messageStart = diagnostics ? diagnostics->GetNumStoredMessages() : 0;
+    auto started = GetTickCount64();
     hr = device->CreateStateObject(&desc, IID_PPV_ARGS(&pipeline.state));
-    if (FAILED(hr)) return hr;
+    if (FAILED(hr))
+    {
+        if (diagnostics)
+            for (UINT64 i = messageStart; i < diagnostics->GetNumStoredMessages(); ++i)
+            {
+                SIZE_T size = 0;
+                diagnostics->GetMessage(i, nullptr, &size);
+                std::vector<char> bytes(size);
+                auto message = reinterpret_cast<D3D12_MESSAGE*>(bytes.data());
+                if (SUCCEEDED(diagnostics->GetMessage(i, message, &size)))
+                    UnityLog::LogError("Inline pipeline: %s\n", message->pDescription);
+            }
+        return hr;
+    }
     ComPtr<ID3D12StateObjectProperties> properties;
     hr = pipeline.state.As(&properties);
     if (FAILED(hr)) return hr;
@@ -217,17 +289,34 @@ HRESULT Build(Program& program, const Compute& compute, Pipeline& pipeline)
     heap.Type = D3D12_HEAP_TYPE_UPLOAD;
     D3D12_RESOURCE_DESC buffer{};
     buffer.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    buffer.Width = D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT;
+    pipeline.hitCount = UINT(program.materials.size() * 2);
+    buffer.Width = D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT +
+                   ((UINT64(pipeline.hitCount) * D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES + 63) & ~UINT64(63));
     buffer.Height = buffer.DepthOrArraySize = buffer.MipLevels = buffer.SampleDesc.Count = 1;
     buffer.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    hr = device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &buffer,
-        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&pipeline.table));
+    hr = device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &buffer, D3D12_RESOURCE_STATE_GENERIC_READ,
+                                         nullptr, IID_PPV_ARGS(&pipeline.table));
     if (FAILED(hr)) return hr;
     void* mapped;
     hr = pipeline.table->Map(0, nullptr, &mapped);
     if (FAILED(hr)) return hr;
     memcpy(mapped, identifier, D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES);
+    auto records = static_cast<char*>(mapped) + D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT;
+    for (size_t i = 0; i < pipeline.hitCount; ++i)
+    {
+        const auto& material = program.materials[i / 2];
+        const void* hit =
+            properties->GetShaderIdentifier((i % 2 ? material->candidateGroup : material->hitGroup).c_str());
+        if (!hit)
+        {
+            pipeline.table->Unmap(0, nullptr);
+            return E_INVALIDARG;
+        }
+        memcpy(records + i * D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES, hit, D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES);
+    }
     pipeline.table->Unmap(0, nullptr);
+    UnityLog::Log("Inline pipeline '%ls': %zu material libraries, %u cached SBT records, %llu ms.\n",
+                  program.entry.c_str(), included.size(), pipeline.hitCount, GetTickCount64() - started);
     return S_OK;
 }
 
@@ -269,6 +358,9 @@ void STDMETHODCALLTYPE DispatchList(ID3D12GraphicsCommandList* list, UINT x, UIN
         {
             D3D12_DISPATCH_RAYS_DESC rays{};
             rays.RayGenerationShaderRecord = {pipeline.table->GetGPUVirtualAddress(), D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES};
+            if (pipeline.hitCount)
+                rays.HitGroupTable = {pipeline.table->GetGPUVirtualAddress() + D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT,
+                    UINT64(pipeline.hitCount) * D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES, D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES};
             rays.Width = x * program->threadsX;
             rays.Height = y * program->threadsY;
             rays.Depth = z;
@@ -375,7 +467,7 @@ void CaptureInlineRayTracing(const D3D12_COMPUTE_PIPELINE_STATE_DESC& desc, void
     if (device) Capture(desc, result);
 }
 
-extern "C" __declspec(dllexport) uintptr_t UnityRhiCreateInlineRayTracing(const void* code, int size, const wchar_t* entry, UINT x, UINT y, int ser)
+extern "C" __declspec(dllexport) uintptr_t UnityRhiCreateInlineRayTracing(const void* code, int size, const wchar_t* entry, UINT x, UINT y)
 {
     std::lock_guard lock(gate);
     if (!device || !code || size <= 0 || !entry || !x || !y) return 0;
@@ -385,7 +477,7 @@ extern "C" __declspec(dllexport) uintptr_t UnityRhiCreateInlineRayTracing(const 
         UnityLog::LogError("Inline RayGen DXC reflection is unavailable.\n");
         return 0;
     }
-    if (ser && !UnityRhiInitializeShaderExecutionReordering(device.Get()))
+    if (!UnityRhiInitializeShaderExecutionReordering(device.Get()))
     {
         UnityLog::LogError("Inline RayGen SER initialization failed.\n");
         return 0;
@@ -398,6 +490,29 @@ extern "C" __declspec(dllexport) uintptr_t UnityRhiCreateInlineRayTracing(const 
     uintptr_t handle = nextHandle++;
     programs.emplace(handle, std::move(program));
     return handle;
+}
+
+extern "C" __declspec(dllexport) HRESULT UnityRhiAddInlineRayTracingMaterial(uintptr_t handle,
+    const void* code, int size, const wchar_t* closest, const wchar_t* candidate)
+{
+    std::lock_guard lock(gate);
+    auto found = programs.find(handle);
+    if (found == programs.end() || !code || size <= 0 || !closest || !candidate) return E_INVALIDARG;
+    auto& program = *found->second;
+    if (!program.pipelines.empty()) return E_UNEXPECTED;
+    std::shared_ptr<Material> material = materialCache[closest].lock();
+    if (!material || material->code.size() != size || memcmp(material->code.data(), code, size) != 0)
+    {
+        material = std::make_shared<Material>();
+        material->code.assign(static_cast<const char*>(code), static_cast<const char*>(code) + size);
+        material->closest = closest;
+        material->candidate = candidate;
+        material->hitGroup = std::wstring(closest) + L"Group";
+        material->candidateGroup = std::wstring(candidate) + L"Group";
+        materialCache[closest] = material;
+    }
+    program.materials.push_back(std::move(material));
+    return S_OK;
 }
 
 extern "C" __declspec(dllexport) void UnityRhiReleaseInlineRayTracing(uintptr_t handle)
@@ -425,6 +540,7 @@ void ShutdownInlineRayTracing()
     hooks.clear();
     recordings.clear();
     programs.clear();
+    materialCache.clear();
     retired.clear();
     computes.clear();
     device.Reset();
