@@ -35,13 +35,14 @@ struct Pipeline
 struct Material
 {
     std::vector<char> code;
-    std::wstring closest, candidate, hitGroup, candidateGroup;
+    std::wstring closest, hitGroup;
 };
 struct Program
 {
     std::vector<char> code;
     std::wstring entry;
     std::vector<std::shared_ptr<Material>> materials;
+    std::vector<std::vector<char>> libraries;
     std::map<ID3D12RootSignature*, Pipeline> pipelines;
     UINT threadsX, threadsY;
     UINT64 fence = 0, dispatches = 0;
@@ -157,6 +158,8 @@ HRESULT ValidateBindings(Program& program, ID3D12ShaderReflection* carrier)
     std::vector<const std::vector<char>*> libraries{&program.code};
     for (const auto& material : program.materials)
         libraries.push_back(&material->code);
+    for (const auto& library : program.libraries)
+        libraries.push_back(&library);
     for (auto bytes : libraries)
     {
         DxcBuffer code{bytes->data(), bytes->size(), 0};
@@ -219,16 +222,16 @@ HRESULT Build(Program& program, const Compute& compute, Pipeline& pipeline)
     if (FAILED(hr)) return hr;
     ID3D12RootSignature* root = compute.root.Get();
     std::vector<D3D12_DXIL_LIBRARY_DESC> libraries(1);
-    libraries.reserve(1 + program.materials.size());
+    libraries.reserve(1 + program.materials.size() + program.libraries.size());
     libraries[0].DXILLibrary = {program.code.data(), program.code.size()};
     D3D12_EXPORT_DESC raygenExport{program.entry.c_str(), nullptr, D3D12_EXPORT_FLAG_NONE};
     libraries[0].NumExports = 1;
     libraries[0].pExports = &raygenExport;
-    std::vector<std::array<D3D12_EXPORT_DESC, 2>> exports;
+    std::vector<D3D12_EXPORT_DESC> exports;
     exports.reserve(program.materials.size());
     std::vector<const Material*> included;
     std::vector<D3D12_HIT_GROUP_DESC> groups;
-    groups.reserve(program.materials.size() * 2);
+    groups.reserve(program.materials.size());
     for (size_t i = 0; i < program.materials.size(); ++i)
     {
         const auto& material = program.materials[i];
@@ -236,21 +239,23 @@ HRESULT Build(Program& program, const Compute& compute, Pipeline& pipeline)
         included.push_back(material.get());
         D3D12_DXIL_LIBRARY_DESC library{};
         library.DXILLibrary = {material->code.data(), material->code.size()};
-        exports.push_back({D3D12_EXPORT_DESC{material->closest.c_str(), nullptr, D3D12_EXPORT_FLAG_NONE},
-                           D3D12_EXPORT_DESC{material->candidate.c_str(), nullptr, D3D12_EXPORT_FLAG_NONE}});
-        library.NumExports = 2;
-        library.pExports = exports.back().data();
+        exports.push_back({material->closest.c_str(), nullptr, D3D12_EXPORT_FLAG_NONE});
+        library.NumExports = 1;
+        library.pExports = &exports.back();
         libraries.push_back(library);
         D3D12_HIT_GROUP_DESC hit{};
         hit.Type = D3D12_HIT_GROUP_TYPE_TRIANGLES;
         hit.HitGroupExport = material->hitGroup.c_str();
         hit.ClosestHitShaderImport = material->closest.c_str();
         groups.push_back(hit);
-        hit.HitGroupExport = material->candidateGroup.c_str();
-        hit.ClosestHitShaderImport = material->candidate.c_str();
-        groups.push_back(hit);
     }
-    D3D12_RAYTRACING_SHADER_CONFIG shader{112, 8};
+    for (const auto& code : program.libraries)
+    {
+        D3D12_DXIL_LIBRARY_DESC library{};
+        library.DXILLibrary = {code.data(), code.size()};
+        libraries.push_back(library);
+    }
+    D3D12_RAYTRACING_SHADER_CONFIG shader{108, 8};
     D3D12_RAYTRACING_PIPELINE_CONFIG config{1};
     std::vector<D3D12_STATE_SUBOBJECT> objects;
     for (auto& library : libraries)
@@ -289,7 +294,7 @@ HRESULT Build(Program& program, const Compute& compute, Pipeline& pipeline)
     heap.Type = D3D12_HEAP_TYPE_UPLOAD;
     D3D12_RESOURCE_DESC buffer{};
     buffer.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    pipeline.hitCount = UINT(program.materials.size() * 2);
+    pipeline.hitCount = UINT(program.materials.size());
     buffer.Width = D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT +
                    ((UINT64(pipeline.hitCount) * D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES + 63) & ~UINT64(63));
     buffer.Height = buffer.DepthOrArraySize = buffer.MipLevels = buffer.SampleDesc.Count = 1;
@@ -304,9 +309,7 @@ HRESULT Build(Program& program, const Compute& compute, Pipeline& pipeline)
     auto records = static_cast<char*>(mapped) + D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT;
     for (size_t i = 0; i < pipeline.hitCount; ++i)
     {
-        const auto& material = program.materials[i / 2];
-        const void* hit =
-            properties->GetShaderIdentifier((i % 2 ? material->candidateGroup : material->hitGroup).c_str());
+        const void* hit = properties->GetShaderIdentifier(program.materials[i]->hitGroup.c_str());
         if (!hit)
         {
             pipeline.table->Unmap(0, nullptr);
@@ -493,11 +496,11 @@ extern "C" __declspec(dllexport) uintptr_t UnityRhiCreateInlineRayTracing(const 
 }
 
 extern "C" __declspec(dllexport) HRESULT UnityRhiAddInlineRayTracingMaterial(uintptr_t handle,
-    const void* code, int size, const wchar_t* closest, const wchar_t* candidate)
+    const void* code, int size, const wchar_t* closest)
 {
     std::lock_guard lock(gate);
     auto found = programs.find(handle);
-    if (found == programs.end() || !code || size <= 0 || !closest || !candidate) return E_INVALIDARG;
+    if (found == programs.end() || !code || size <= 0 || !closest) return E_INVALIDARG;
     auto& program = *found->second;
     if (!program.pipelines.empty()) return E_UNEXPECTED;
     std::shared_ptr<Material> material = materialCache[closest].lock();
@@ -506,12 +509,21 @@ extern "C" __declspec(dllexport) HRESULT UnityRhiAddInlineRayTracingMaterial(uin
         material = std::make_shared<Material>();
         material->code.assign(static_cast<const char*>(code), static_cast<const char*>(code) + size);
         material->closest = closest;
-        material->candidate = candidate;
         material->hitGroup = std::wstring(closest) + L"Group";
-        material->candidateGroup = std::wstring(candidate) + L"Group";
         materialCache[closest] = material;
     }
     program.materials.push_back(std::move(material));
+    return S_OK;
+}
+
+extern "C" __declspec(dllexport) HRESULT UnityRhiAddInlineRayTracingLibrary(uintptr_t handle, const void* code, int size)
+{
+    std::lock_guard lock(gate);
+    auto found = programs.find(handle);
+    if (found == programs.end() || !code || size <= 0) return E_INVALIDARG;
+    auto& program = *found->second;
+    if (!program.pipelines.empty()) return E_UNEXPECTED;
+    program.libraries.emplace_back(static_cast<const char*>(code), static_cast<const char*>(code) + size);
     return S_OK;
 }
 
