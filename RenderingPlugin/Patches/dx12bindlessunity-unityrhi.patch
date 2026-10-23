@@ -1,7 +1,8 @@
 diff --git a/NativePlugin.Bindless/PluginSource/source/RenderAPI.h b/NativePlugin.Bindless/PluginSource/source/RenderAPI.h
+index 13c5661..f67d1bc 100644
 --- a/NativePlugin.Bindless/PluginSource/source/RenderAPI.h
 +++ b/NativePlugin.Bindless/PluginSource/source/RenderAPI.h
-@@ -22,7 +22,8 @@
+@@ -22,7 +22,8 @@ struct BindlessTextureList {
  enum class BindlessTextureType {
  	None = 0,
  	Resource,
@@ -11,7 +12,7 @@ diff --git a/NativePlugin.Bindless/PluginSource/source/RenderAPI.h b/NativePlugi
  };
  
  // 8 + 4 + 4 = 16 bytes.
-@@ -44,6 +45,7 @@
+@@ -44,6 +45,7 @@ public:
  	virtual bool GetUsesReverseZ() = 0;
  	virtual int SetBindlessTextures(int offset, unsigned numTextures, BindlessTexture* textures) = 0;
  	virtual void SetCurrentBindlessOffset(void* eventData) = 0;
@@ -20,6 +21,7 @@ diff --git a/NativePlugin.Bindless/PluginSource/source/RenderAPI.h b/NativePlugi
  	virtual void HookSetFunctions() {
  
 diff --git a/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.cpp b/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.cpp
+index b80535a..a4c2a04 100644
 --- a/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.cpp
 +++ b/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.cpp
 @@ -15,6 +15,9 @@
@@ -32,7 +34,7 @@ diff --git a/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.cpp b/Nat
  std::unordered_map<void*, void*> hookedFunctions = {};
  
  concurrency::concurrent_unordered_set<void*> hookedCmdVTables;
-@@ -28,7 +31,7 @@
+@@ -28,7 +31,7 @@ static const GUID MeetemBindlessData =
  
  const uint32_t absoluteMaxDescriptors = 1000000u;
  const uint32_t mainDescHeapMagic = 262144u;
@@ -41,7 +43,7 @@ diff --git a/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.cpp b/Nat
  static bool isInitialized = false;
  static RenderAPI_D3D12* myD3D12 = nullptr;
  
-@@ -106,7 +109,7 @@
+@@ -106,7 +109,7 @@ static bool Unprotect(void* addr) {
  }
  
  #ifdef USE_MINHOOK
@@ -50,7 +52,7 @@ diff --git a/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.cpp b/Nat
  #include "TargetFunctionHook.h"
  
  _forceinline static void* HookVT(void* vtablePtr, int vtableOffset, void* newFunction) {
-@@ -344,6 +347,8 @@
+@@ -344,6 +347,8 @@ extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateComputePipelineState(
  	}
  
  	auto res = OrigCreateComputePipelineState(This, pDesc, riid, ppPipelineState);
@@ -59,7 +61,7 @@ diff --git a/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.cpp b/Nat
  	if (!FAILED(res) && hasHookedRootsig) {
  		ID3D12PipelineState* state = (ID3D12PipelineState*)*ppPipelineState;
  		state->SetPrivateData(MeetemBindlessData, sizeof(HookedRootSignature), &data);
-@@ -360,6 +365,7 @@
+@@ -360,6 +365,7 @@ extern "C" static HRESULT STDMETHODCALLTYPE Hooked_Reset(COMMAND_LIST_ORIGINAL(R
  {
  	auto result = OrigReset(This, pAllocator, pInitialState);
  	if (SUCCEEDED(result)) {
@@ -67,7 +69,7 @@ diff --git a/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.cpp b/Nat
  		SetCommandListState(This, {});
  		// Reset may replace the vtable and its recording entry points.
  		// Install before Unity starts recording, rather than at submission.
-@@ -389,96 +395,21 @@
+@@ -389,96 +395,21 @@ extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateRootSignature(
  	deserializer->Release();
  
  	bool needPlaceSrv = false;
@@ -151,10 +153,6 @@ diff --git a/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.cpp b/Nat
 -			for (unsigned k = 0; k < newRanges.size(); k++) {
 -				writableDescriptors[k] = newRanges.at(k);
 -			}
--		}
--	}
--
--	if (ignore || !needPlaceSrv) {
 +	for (unsigned i = 0; i < rootSig.NumParameters; ++i) {
 +		const auto& parameter = rootSig.pParameters[i];
 +		if (parameter.ParameterType != D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE) continue;
@@ -163,22 +161,23 @@ diff --git a/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.cpp b/Nat
 +			// Unity flattens register spaces when sizing these tables.
 +			needPlaceSrv |= range.RangeType == D3D12_DESCRIPTOR_RANGE_TYPE_SRV
 +				&& range.BaseShaderRegister + range.NumDescriptors >= srvBindlessDescriptorStart + 1;
-+		}
-+	}
+ 		}
+ 	}
+-
+-	if (ignore || !needPlaceSrv) {
 +	if (!needPlaceSrv) {
  		FreeDeepCopy(&rootSig);
 -		auto ret = OrigCreateRootSignature(This, nodeMask, pBlobWithRootSignature, blobLengthInBytes, riid, ppvRootSignature);
 -		UnityLog::Debug("Created root desc [n] %p, %p\n", *ppvRootSignature, (void*)(size_t)(ret));
 -		
 -		return ret;
--	}
 +		return OrigCreateRootSignature(This, nodeMask, pBlobWithRootSignature, blobLengthInBytes, riid, ppvRootSignature);
-+	}
+ 	}
 +	auto writableParams = const_cast<D3D12_ROOT_PARAMETER*>(rootSig.pParameters);
  
  	D3D12_ROOT_PARAMETER p = {};
  	p.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-@@ -489,11 +420,17 @@
+@@ -489,11 +420,17 @@ extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateRootSignature(
  	newRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
  	newRange.NumDescriptors = myD3D12->numAdditionalSrv();
  	newRange.BaseShaderRegister = srvBindlessDescriptorStart;
@@ -199,7 +198,7 @@ diff --git a/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.cpp b/Nat
  
  	// Append to the end.
  	writableParams[rootSig.NumParameters] = p;
-@@ -568,7 +505,7 @@
+@@ -568,7 +505,7 @@ extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateDescriptorHeap(ID3D12De
  			}
  		}
  
@@ -208,9 +207,12 @@ diff --git a/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.cpp b/Nat
  
  		auto res = OrigCreateDescriptorHeap(device, &pDescCopy, riid, ppvHeap);
  		if (FAILED(res) || ppvHeap == nullptr) {
-@@ -580,7 +517,11 @@
- 				myD3D12->srvDescriptorHeaps.push_back(ptr);
- 
+@@ -577,10 +514,12 @@ extern "C" static HRESULT STDMETHODCALLTYPE Hooked_CreateDescriptorHeap(ID3D12De
+ 		else if (ppvHeap != nullptr) {
+ 			auto ptr = (ID3D12DescriptorHeap*)*ppvHeap;
+ 			if (ptr != nullptr) {
+-				myD3D12->srvDescriptorHeaps.push_back(ptr);
+-
  				if (hooked) {
 +					// Unity may release this heap while entries still point into it; keep it alive.
 +					ptr->AddRef();
@@ -220,7 +222,32 @@ diff --git a/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.cpp b/Nat
  				}
  			}
  		} else {
-@@ -960,28 +901,14 @@
+@@ -704,7 +643,6 @@ extern "C" static void STDMETHODCALLTYPE Hooked_SetDescriptorHeaps(COMMAND_LIST_
+ 	unsigned assigned = 0;
+ 	bool hasSrvHeap = false;
+ 
+-	const auto& srvHeaps = myD3D12->srvDescriptorHeaps;
+ 	const auto& hookedHeaps = myD3D12->hookedDescriptorHeaps;
+ 
+ 	for (UINT i = 0; i < NumDescriptorHeaps; ++i)
+@@ -715,14 +653,8 @@ extern "C" static void STDMETHODCALLTYPE Hooked_SetDescriptorHeaps(COMMAND_LIST_
+ 		if (heap == nullptr)
+ 			continue;
+ 
+-		for (auto v : srvHeaps)
+-		{
+-			if (v == heap)
+-			{
+-				hasSrvHeap = true;
+-				break;
+-			}
+-		}
++		if (heap->GetDesc().Type == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV)
++			hasSrvHeap = true;
+ 
+ 		for (unsigned k = 0; k < hookedHeaps.size(); ++k)
+ 		{
+@@ -960,28 +892,14 @@ void InstallEarlyD3D12Hooks()
  
  extern unsigned __api_call_counter;
  
@@ -245,17 +272,16 @@ diff --git a/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.cpp b/Nat
  		CD3DX12_CPU_DESCRIPTOR_HANDLE cpuHandle(heap->GetCPUDescriptorHandleForHeapStart());
  		cpuHandle.Offset(this->srvIncrement * this->srvBaseOffset);
 -		cpuHandle.Offset(this->srvIncrement * offset);
--
++		cpuHandle.Offset(this->srvIncrement * first);
+ 
 -		for (unsigned i = 0; i < numTextures; i++) {
 -			auto t = textures[i];
-+		cpuHandle.Offset(this->srvIncrement * first);
-+
 +		for (unsigned i = 0; i < count; i++) {
 +			auto t = slotEntries[first + i];
  
  			if (t.type == BindlessTextureType::None) {
  				D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-@@ -1015,6 +942,23 @@
+@@ -1015,6 +933,23 @@ int RenderAPI_D3D12::SetBindlessTextures(int offset, unsigned numTextures, Bindl
  				goto next;
  			}
  
@@ -279,7 +305,7 @@ diff --git a/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.cpp b/Nat
  			if (t.type == BindlessTextureType::SRV) {
  				UnityLog::LogWarning("Raw SRVs are not supported on D3D12\n");
  				goto next;
-@@ -1024,8 +968,66 @@
+@@ -1024,10 +959,68 @@ int RenderAPI_D3D12::SetBindlessTextures(int offset, unsigned numTextures, Bindl
  			cpuHandle.Offset(this->srvIncrement);
  		}
  	}
@@ -339,14 +365,18 @@ diff --git a/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.cpp b/Nat
 +		WriteDescriptors(heap, (unsigned)offset, numTextures);
  
  	return 1;
-+}
-+
-+int RenderAPI_D3D12::GetBindlessCapacity() {
-+	return isInitialized && !hookedDescriptorHeaps.empty() ? (int)numAdditionalSrv() : 0;
  }
  
++int RenderAPI_D3D12::GetBindlessCapacity() {
++	return isInitialized && !hookedDescriptorHeaps.empty() ? (int)numAdditionalSrv() : 0;
++}
++
  void RenderAPI_D3D12::HookSetFunctions() {
-@@ -1108,3 +1110,12 @@ void RenderAPI_D3D12::release_resources()
+ 	
+ }
+@@ -1106,7 +1099,16 @@ void RenderAPI_D3D12::initialize_and_create_resources()
+ 
+ void RenderAPI_D3D12::release_resources()
  {
 -
 +	std::lock_guard<std::mutex> lock(slotMutex);
@@ -360,7 +390,10 @@ diff --git a/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.cpp b/Nat
 +	slotEntries.clear();
 +	isInitialized = false;
  }
+ 
+ void RenderAPI_D3D12::wait_for_unity_frame_fence(UINT64 fence_value)
 diff --git a/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.h b/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.h
+index ed5ccf0..6b6751a 100644
 --- a/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.h
 +++ b/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.h
 @@ -12,6 +12,8 @@
@@ -372,7 +405,7 @@ diff --git a/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.h b/Nativ
  #include "RenderAPI.h"
  
  class RenderAPI_D3D12 : public RenderAPI
-@@ -27,14 +29,15 @@
+@@ -27,14 +29,15 @@ public:
      );
  
      virtual void SetCurrentBindlessOffset(void* eventData) override;
@@ -390,20 +423,24 @@ diff --git a/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.h b/Nativ
      }
  
      uint32_t srvBaseOffset;
-@@ -48,6 +51,12 @@
+@@ -46,9 +49,14 @@ public:
+         return currentFrameBindlessOffset;
+     }
  
-     std::vector<ID3D12DescriptorHeap*> srvDescriptorHeaps{};
+-    std::vector<ID3D12DescriptorHeap*> srvDescriptorHeaps{};
      std::vector<ID3D12DescriptorHeap*> hookedDescriptorHeaps{};
-+
+ 
 +    // Every entry is mirrored so heaps created later receive it, and keeps a reference to its resource.
 +    std::vector<BindlessTexture> slotEntries{};
 +    std::vector<IUnknown*> slotResources{};
 +    std::mutex slotMutex;
 +    void WriteDescriptors(ID3D12DescriptorHeap* heap, unsigned first, unsigned count);
- 
++
  private:
      int currentFrameBindlessOffset;
+ 
 diff --git a/NativePlugin.Bindless/PluginSource/source/RenderingPlugin.cpp b/NativePlugin.Bindless/PluginSource/source/RenderingPlugin.cpp
+index 7c87755..3c5d446 100644
 --- a/NativePlugin.Bindless/PluginSource/source/RenderingPlugin.cpp
 +++ b/NativePlugin.Bindless/PluginSource/source/RenderingPlugin.cpp
 @@ -11,7 +11,7 @@
@@ -415,7 +452,7 @@ diff --git a/NativePlugin.Bindless/PluginSource/source/RenderingPlugin.cpp b/Nat
  
  static bool InitializeHooks(){
  	if(MH_Initialize() != MH_STATUS::MH_OK){
-@@ -37,6 +37,9 @@
+@@ -37,6 +37,9 @@ IUnityInterfaces* s_UnityInterfaces = NULL;
  IUnityGraphics* s_Graphics = NULL;
  
  extern void InstallEarlyD3D12Hooks();
@@ -425,7 +462,7 @@ diff --git a/NativePlugin.Bindless/PluginSource/source/RenderingPlugin.cpp b/Nat
  extern "C" UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API UnityPluginLoad(IUnityInterfaces * unityInterfaces)
  {
  	s_UnityInterfaces = unityInterfaces;
-@@ -59,6 +62,8 @@
+@@ -59,6 +62,8 @@ extern "C" UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API UnityPluginLoad(IUnit
  
  extern "C" UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API UnityPluginUnload()
  {
@@ -434,7 +471,7 @@ diff --git a/NativePlugin.Bindless/PluginSource/source/RenderingPlugin.cpp b/Nat
  	s_Graphics->UnregisterDeviceEventCallback(OnGraphicsDeviceEvent);
  }
  
-@@ -85,6 +90,10 @@
+@@ -85,6 +90,10 @@ static void UNITY_INTERFACE_API OnGraphicsDeviceEvent(UnityGfxDeviceEventType ev
  		s_CurrentAPI->ProcessDeviceEvent(eventType, s_UnityInterfaces);
  	}
  
@@ -445,7 +482,7 @@ diff --git a/NativePlugin.Bindless/PluginSource/source/RenderingPlugin.cpp b/Nat
  	// Cleanup graphics API implementation upon shutdown
  	if (eventType == kUnityGfxDeviceEventShutdown)
  	{
-@@ -119,4 +128,9 @@
+@@ -119,4 +128,9 @@ extern "C" UNITY_INTERFACE_EXPORT int UNITY_INTERFACE_API MeetemBindless_SetBind
  		return 0;
  
  	return s_CurrentAPI->SetBindlessTextures(offset,(unsigned)numTextures, textures);
