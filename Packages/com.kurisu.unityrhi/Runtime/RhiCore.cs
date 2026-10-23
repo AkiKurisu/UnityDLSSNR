@@ -254,6 +254,9 @@ namespace UnityRhi
             finally
             {
                 commandBuffer.Release();
+                s_FlushMarkerSrc?.Dispose();
+                s_FlushMarkerDst?.Dispose();
+                s_FlushMarkerSrc = s_FlushMarkerDst = null;
             }
         }
 

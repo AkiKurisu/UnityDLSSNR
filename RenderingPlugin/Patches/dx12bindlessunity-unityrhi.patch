@@ -279,7 +279,7 @@ diff --git a/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.cpp b/Nat
  			if (t.type == BindlessTextureType::SRV) {
  				UnityLog::LogWarning("Raw SRVs are not supported on D3D12\n");
  				goto next;
-@@ -1024,8 +968,49 @@
+@@ -1024,8 +968,66 @@
  			cpuHandle.Offset(this->srvIncrement);
  		}
  	}
@@ -307,15 +307,32 @@ diff --git a/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.cpp b/Nat
 +		return 0;
 +	}
 +
++	std::vector<ID3D12Pageable*> resources(numTextures, nullptr);
 +	for (unsigned i = 0; i < numTextures; i++) {
-+		auto& t = textures[i];
-+		IUnknown* resource = (t.type == BindlessTextureType::Resource || t.type == BindlessTextureType::RawBuffer) ? (IUnknown*)t.handle : nullptr;
-+		if (resource != nullptr)
-+			resource->AddRef();
-+		if (slotResources[offset + i] != nullptr)
-+			slotResources[offset + i]->Release();
-+		slotResources[offset + i] = resource;
-+		slotEntries[offset + i] = t;
++		const auto& entry = textures[i];
++		if (entry.type != BindlessTextureType::Resource && entry.type != BindlessTextureType::RawBuffer)
++			continue;
++		resources[i] = static_cast<ID3D12Resource*>(entry.handle);
++		HRESULT hr = device->MakeResident(1, &resources[i]);
++		if (FAILED(hr)) {
++			for (unsigned j = 0; j < i; j++) {
++				if (!resources[j]) continue;
++				device->Evict(1, &resources[j]);
++				resources[j]->Release();
++			}
++			UnityLog::LogError("Cannot make bindless resource %u resident (0x%08X).\n", offset + i, hr);
++			return 0;
++		}
++		resources[i]->AddRef();
++	}
++	for (unsigned i = 0; i < numTextures; i++) {
++		if (slotResources[offset + i]) {
++			auto resource = static_cast<ID3D12Pageable*>(slotResources[offset + i]);
++			device->Evict(1, &resource);
++			resource->Release();
++		}
++		slotResources[offset + i] = resources[i];
++		slotEntries[offset + i] = textures[i];
 +	}
 +
 +	for (auto heap : this->hookedDescriptorHeaps)
@@ -329,6 +346,20 @@ diff --git a/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.cpp b/Nat
  }
  
  void RenderAPI_D3D12::HookSetFunctions() {
+@@ -1108,3 +1110,12 @@ void RenderAPI_D3D12::release_resources()
+ {
+-
++	std::lock_guard<std::mutex> lock(slotMutex);
++	for (auto entry : slotResources) {
++		if (!entry) continue;
++		auto resource = static_cast<ID3D12Pageable*>(entry);
++		device->Evict(1, &resource);
++		resource->Release();
++	}
++	slotResources.clear();
++	slotEntries.clear();
++	isInitialized = false;
+ }
 diff --git a/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.h b/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.h
 --- a/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.h
 +++ b/NativePlugin.Bindless/PluginSource/source/RenderAPI_D3D12.h
