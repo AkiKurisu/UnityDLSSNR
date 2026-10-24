@@ -278,7 +278,10 @@ FetchContent_MakeAvailable(unityrhi_dx12bindless unityrhi_minhook)
 set(UNITYRHI_BINDLESS_SRC "${unityrhi_dx12bindless_SOURCE_DIR}/NativePlugin.Bindless/PluginSource/source")
 set(UNITYRHI_MINHOOK_SRC "${unityrhi_minhook_SOURCE_DIR}")
 add_library(GfxPluginIllusionRHI SHARED
+    AccelerationStructureHooks.cpp
+    AccelerationStructureSlots.c
     D3D12Runtime.cpp
+    OpacityMicromaps.cpp
     ShaderExecutionReordering.cpp
     InlineRayTracing.cpp
     "${UNITYRHI_BINDLESS_SRC}/RenderingPlugin.cpp"

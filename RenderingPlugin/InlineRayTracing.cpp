@@ -23,6 +23,8 @@ extern IUnityInterfaces* s_UnityInterfaces;
 extern DxcCreateInstanceProc GetShaderCompiler();
 extern "C" int UnityRhiInitializeShaderExecutionReordering(IUnknown*);
 
+bool OpacityMicromapsSupported();
+
 namespace
 {
 struct Pipeline
@@ -256,7 +258,7 @@ HRESULT Build(Program& program, const Compute& compute, Pipeline& pipeline)
         libraries.push_back(library);
     }
     D3D12_RAYTRACING_SHADER_CONFIG shader{108, 8};
-    D3D12_RAYTRACING_PIPELINE_CONFIG config{1};
+    D3D12_RAYTRACING_PIPELINE_CONFIG1 config{1, OpacityMicromapsSupported() ? D3D12_RAYTRACING_PIPELINE_FLAG_ALLOW_OPACITY_MICROMAPS : D3D12_RAYTRACING_PIPELINE_FLAG_NONE};
     std::vector<D3D12_STATE_SUBOBJECT> objects;
     for (auto& library : libraries)
         objects.push_back({D3D12_STATE_SUBOBJECT_TYPE_DXIL_LIBRARY, &library});
@@ -264,7 +266,7 @@ HRESULT Build(Program& program, const Compute& compute, Pipeline& pipeline)
         objects.push_back({D3D12_STATE_SUBOBJECT_TYPE_HIT_GROUP, &group});
     objects.push_back({D3D12_STATE_SUBOBJECT_TYPE_GLOBAL_ROOT_SIGNATURE, &root});
     objects.push_back({D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_SHADER_CONFIG, &shader});
-    objects.push_back({D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG, &config});
+    objects.push_back({D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG1, &config});
     D3D12_STATE_OBJECT_DESC desc{D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE, UINT(objects.size()), objects.data()};
     ComPtr<ID3D12InfoQueue> diagnostics;
     device.As(&diagnostics);
@@ -425,6 +427,8 @@ void UNITY_INTERFACE_API Begin(int, void* data)
 }
 }
 
+bool InstallAccelerationStructureHooks(ID3D12Device5* device);
+
 extern "C" __declspec(dllexport) int UnityRhiInitializeInlineRayTracing()
 {
     std::lock_guard lock(gate);
@@ -442,6 +446,7 @@ extern "C" __declspec(dllexport) int UnityRhiInitializeInlineRayTracing()
         device.Reset();
         return 0;
     }
+    InstallAccelerationStructureHooks(device.Get());
     void** methods = *reinterpret_cast<void***>(device.Get());
     if (!Install(methods[47], reinterpret_cast<void*>(&CreateFromStream), reinterpret_cast<void**>(&originalStream)))
     {
