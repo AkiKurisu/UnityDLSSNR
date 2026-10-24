@@ -50,6 +50,11 @@ call :copy_required "%BIN%\nvngx_dlssg.dll" "%PLUGINS%\"
 if errorlevel 1 exit /B 1
 call :copy_optional "%BIN%\nvngx_dlssnr.dll" "%PLUGINS%\"
 if errorlevel 1 exit /B 1
+set AGILITY=%cd%\_Build\_deps\agilitysdk-src\build\native\bin\x64
+call :copy_required "%AGILITY%\D3D12Core.dll" "%PLUGINS%\D3D12\"
+if errorlevel 1 exit /B 1
+call :copy_required "%AGILITY%\d3d12SDKLayers.dll" "%PLUGINS%\D3D12\"
+if errorlevel 1 exit /B 1
 
 if /I "%CONFIG%"=="Debug" (
     echo   Debug symbols:
